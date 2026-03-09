@@ -1,0 +1,232 @@
+"""
+Genetic algorithm-based optimization of kernel parameters.
+"""
+
+import random
+import csv
+import numpy as np
+import time
+
+
+class Variable:
+    def __init__(self, name: str, choices: list):
+        self.name = name
+        self.choices = choices
+
+    def random_sample(self):
+        return random.choice(self.choices)
+
+
+class VariableSet:
+    def __init__(self, variables: list[Variable], is_valid_fn=None):
+        self.variables = variables
+        self.is_valid_fn = is_valid_fn
+
+    def random_sample(self):
+        return [var.random_sample() for var in self.variables]
+
+    def names(self) -> list[str]:
+        return [var.name for var in self.variables]
+
+    def complexity(self) -> int:
+        """Return total number of unconstrained combinations."""
+        total = 1
+        for var in self.variables:
+            total *= len(var.choices)
+        return total
+
+    def is_valid(self, sample: list) -> bool:
+        if self.is_valid_fn is None:
+            return True
+        return self.is_valid_fn(sample)
+
+
+class Population:
+    def __init__(self, size: int, variable_set: VariableSet, individuals: list = None):
+        self.variable_set = variable_set
+        self.individuals = individuals if individuals is not None else []
+        self.fitness_scores = []
+        self.generation = 0
+
+    def increment_generation(self):
+        self.generation += 1
+
+    def size(self) -> int:
+        return len(self.individuals)
+
+    def sort(self):
+        scores = np.array(self.fitness_scores)
+        i_sorted = np.argsort(scores)
+        self.individuals = [self.individuals[i] for i in i_sorted]
+        self.fitness_scores = [self.fitness_scores[i] for i in i_sorted]
+
+    def extend(self, new_individuals: list, new_fitness: list):
+        assert len(new_individuals) == len(new_fitness)
+        for ind, fit in zip(new_individuals, new_fitness):
+            if ind not in self.individuals:
+                self.individuals.append(ind)
+                self.fitness_scores.append(fit)
+
+    def shrink(self, nbest: int):
+        if nbest >= len(self.individuals):
+            return
+        self.sort()
+        self.individuals = self.individuals[:nbest]
+        self.fitness_scores = self.fitness_scores[:nbest]
+
+    def print(self):
+        print(
+            f"\nPopulation of size {len(self.individuals)}, generation {self.generation}:"
+        )
+        if not self.fitness_scores:
+            for individual in self.individuals:
+                print(f" {individual}")
+        else:
+            for individual, fitness in zip(self.individuals, self.fitness_scores):
+                print(f" {fitness:.2f}: {individual}")
+        print("\n")
+
+
+def init_random_population(pop_size: int, variable_set: VariableSet) -> Population:
+    population = Population(size=pop_size, variable_set=variable_set)
+    population.individuals = []
+    i = 0
+    while len(population.individuals) < pop_size:
+        sample = variable_set.random_sample()
+        if sample not in population.individuals and variable_set.is_valid(sample):
+            population.individuals.append(sample)
+        i += 1
+        if i > pop_size * 1000 or i > 0.2 * variable_set.complexity():
+            raise RuntimeError(
+                "Unable to initialize population with given constraints."
+            )
+    return population
+
+
+class GeneticAlgorithm:
+    def __init__(
+        self,
+        population: Population,
+        recombination_rate: float = 0.5,
+        mutation_rate: float = 0.001,
+        fertility_rate: float = 1.0,
+        evaluate_fitness=None,
+    ):
+        self.fixed_population_size = population.size()
+        self.population = population
+        self.recombination_rate = recombination_rate
+        self.mutation_rate = mutation_rate
+        self.fertility_rate = fertility_rate
+        self.evaluate_fitness = evaluate_fitness
+        self.ntrials = 50
+        self.population_history = []
+        self.fitness_history = []
+
+    def recombine_and_mutate(self, individuals) -> list:
+        variable_set = self.population.variable_set
+        # every individual gets an update from another donor
+        new_individuals = []
+        npopulation = len(individuals)
+        for i in range(npopulation):
+            parent = individuals[i]
+            donor_idx = random.choice([j for j in range(npopulation) if j != i])
+            donor = individuals[donor_idx]
+            for _ in range(self.ntrials):
+                child = parent.copy()
+                # perform recombination
+                # one gene is always copied from donor
+                force_idx = random.randint(0, len(child) - 1)
+                # a gene is copied from donor with probability recombination_rate
+                for j in range(len(child)):
+                    if random.random() < self.recombination_rate or j == force_idx:
+                        child[j] = donor[j]
+                    # mutate
+                    if random.random() < self.mutation_rate:
+                        child[j] = variable_set.variables[j].random_sample()
+                if (
+                    child not in individuals
+                    and child not in new_individuals
+                    and variable_set.is_valid(child)
+                ):
+                    new_individuals.append(child)
+                    break
+        return new_individuals
+
+    def initialize(self):
+        if not self.population.fitness_scores:
+            # evaluate fitness for the initial population
+            self.population.fitness_scores = [
+                self.evaluate_fitness(*ind) for ind in self.population.individuals
+            ]
+            self.population.sort()
+
+    def next_generation(self) -> Population:
+        # select parents probabilistically based on fitness
+        nb_parents = int(self.population.size() * self.fertility_rate)
+        scores = np.array(self.population.fitness_scores)
+        # give inf cases low probability
+        default = np.sum(scores[~np.isinf(scores)])
+        scores[np.isinf(scores)] = default
+        # convert cost to fitness (higher is better)
+        fitness_probs = 1.0 / (scores + 1e-8)
+        fitness_probs /= np.sum(fitness_probs)
+        allow_duplicates = True
+        parent_indices = np.random.choice(
+            len(self.population.individuals),
+            size=nb_parents,
+            replace=allow_duplicates,
+            p=fitness_probs,
+        )
+        parents = [self.population.individuals[i] for i in parent_indices]
+        # get new set of individuals and extend population
+        new_individuals = self.recombine_and_mutate(parents)
+        new_fitness = [self.evaluate_fitness(*ind) for ind in new_individuals]
+        self.population.extend(new_individuals, new_fitness)
+        # keep only the best individuals
+        self.population.shrink(self.fixed_population_size)
+        self.population.increment_generation()
+
+    def optimize(self, ngen: int, verbose: int = 0):
+        self.initialize()
+        tic = time.perf_counter()
+        for gen in range(ngen):
+            self.population_history.append(self.population.individuals.copy())
+            self.fitness_history.append(self.population.fitness_scores.copy())
+            self.next_generation()
+            if verbose:
+                scores = np.array(self.population.fitness_scores)
+                i_sorted = np.argsort(scores)
+                best_individual = self.population.individuals[i_sorted[0]]
+                best_fitness = self.population.fitness_scores[i_sorted[0]]
+                valid_scores = scores[np.isfinite(scores)]
+                avg_fitness = np.mean(valid_scores)
+                print(
+                    f"Generation {self.population.generation:4d}: "
+                    f" best: {best_fitness:.6f}, avg: {avg_fitness:.6f},"
+                    f" best config: {best_individual}"
+                )
+        toc = time.perf_counter()
+        if verbose:
+            print(f"\nTime spent in optimization: {toc - tic:.2f} s\n")
+
+
+def load_experiment_data(
+    csv_file: str, variable_set: VariableSet, cost_param: str = "time (ms)"
+) -> dict:
+    print(f"\nLoading experiment data from {csv_file} ...")
+    experiment_data = {}
+    fieldnames = variable_set.names()
+    with open(csv_file, "r") as f:
+        reader = csv.DictReader(f)
+        # verify that all variable names and cost_param are in the csv header
+        for param in fieldnames + [cost_param]:
+            if param not in reader.fieldnames:
+                raise ValueError(f"Parameter '{param}' not found in CSV file.")
+        for row in reader:
+            # Use a tuple of parameters as key
+            key = tuple(int(row[param]) for param in variable_set.names())
+            value = float(row[cost_param])
+            if value == 0.0:
+                value = float("inf")
+            experiment_data[key] = value
+    return experiment_data
