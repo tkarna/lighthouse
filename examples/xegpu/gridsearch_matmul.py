@@ -59,7 +59,7 @@ def run_experiment(
             )
             # estimate number of runs
             cost = times.mean()
-            warmup_target = 0.5
+            warmup_target = 0.25
             nwarmup = max(int(warmup_target / cost), 10)
             nruns = 3 * nwarmup
             print(f"{nwarmup=} {nruns=}")
