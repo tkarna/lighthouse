@@ -133,6 +133,11 @@ def check_constraints(params, verbose=False):
     max_nb_sg_threads = 64
     dpas_tile = [8, 16, 16]
     load_max_rows = 32
+    load_max_cols = 16
+    pfetch_min_rows = 8
+    pfetch_max_rows = 32
+    pfetch_min_cols = 16
+    pfetch_max_cols = 32
 
     # heuristics
     # small_load_tile_elems = 16 * 16  # skip smaller load tiles
@@ -199,13 +204,13 @@ def check_constraints(params, verbose=False):
     if load_tile_a_m > load_max_rows:
         print_reason("too large load_tile_a_m")
         return False
-    if load_tile_a_k > load_max_rows:
+    if load_tile_a_k > load_max_cols:
         print_reason("too large load_tile_a_k")
         return False
     if load_tile_b_k > load_max_rows:
         print_reason("too large load_tile_b_k")
         return False
-    if load_tile_b_n > load_max_rows:
+    if load_tile_b_n > load_max_cols:
         print_reason("too large load_tile_b_n")
         return False
     if sg_tile_m % prefetch_tile_a_m != 0:
@@ -220,17 +225,29 @@ def check_constraints(params, verbose=False):
     if sg_tile_n % prefetch_tile_b_n != 0:
         print_reason("prefetch_tile_b_n does not divide sg_tile_n")
         return False
-    if prefetch_tile_a_m > load_max_rows:
+    if prefetch_tile_a_m > pfetch_max_rows:
         print_reason("too large prefetch_tile_a_m")
         return False
-    if prefetch_tile_a_k > load_max_rows:
+    if prefetch_tile_a_k > pfetch_max_cols:
         print_reason("too large prefetch_tile_a_k")
         return False
-    if prefetch_tile_b_k > load_max_rows:
+    if prefetch_tile_b_k > pfetch_max_rows:
         print_reason("too large prefetch_tile_b_k")
         return False
-    if prefetch_tile_b_n > load_max_rows:
+    if prefetch_tile_b_n > pfetch_max_cols:
         print_reason("too large prefetch_tile_b_n")
+        return False
+    if prefetch_tile_a_m < pfetch_min_rows:
+        print_reason("too small prefetch_tile_a_m")
+        return False
+    if prefetch_tile_a_k < pfetch_min_cols:
+        print_reason("too small prefetch_tile_a_k")
+        return False
+    if prefetch_tile_b_k < pfetch_min_rows:
+        print_reason("too small prefetch_tile_b_k")
+        return False
+    if prefetch_tile_b_n < pfetch_min_cols:
+        print_reason("too small prefetch_tile_b_n")
         return False
     if load_tile_a_m % dpas_tile[0] != 0:
         print_reason("load_tile_a_m not multiple of dpas_m")
