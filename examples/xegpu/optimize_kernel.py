@@ -6,6 +6,7 @@ from functools import cache
 import sys
 from typing import Optional
 import numpy as np
+import random
 from matmul import cli_parser
 from gridsearch_matmul import (
     check_constraints,
@@ -36,7 +37,7 @@ def optimize_kernel(
 ):
     if random_seed:
         # set random seed for reproducibility
-        np.random.seed(random_seed)
+        random.seed(random_seed)
 
     M, N, K = sizes
     timeout = 50

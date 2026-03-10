@@ -4,6 +4,7 @@ Genetic algorithm-based optimization of kernel parameters.
 
 import csv
 import numpy as np
+import random
 import time
 from types import FunctionType
 
@@ -16,7 +17,7 @@ class Variable:
         self.choices = choices
 
     def random_sample(self) -> int:
-        return int(np.random.choice(self.choices))
+        return random.choice(self.choices)
 
 
 class VariableSet:
@@ -113,7 +114,7 @@ def init_random_population(pop_size: int, variable_set: VariableSet) -> Populati
         if sample not in population.individuals and variable_set.is_valid(sample):
             population.individuals.append(sample)
         i += 1
-        if i > pop_size * 1000 or i > 0.2 * variable_set.complexity():
+        if i > pop_size * 10000 or i > 0.2 * variable_set.complexity():
             raise RuntimeError(
                 "Unable to initialize population with given constraints."
             )
@@ -146,19 +147,19 @@ class GeneticAlgorithm:
         npopulation = len(individuals)
         for i in range(npopulation):
             parent = individuals[i]
-            donor_idx = int(np.random.choice([j for j in range(npopulation) if j != i]))
+            donor_idx = random.choice([j for j in range(npopulation) if j != i])
             donor = individuals[donor_idx]
             for _ in range(self.ntrials):
                 child = parent.copy()
                 # perform recombination
                 # one gene is always copied from donor
-                force_idx = np.random.randint(0, len(child) - 1)
+                force_idx = random.randint(0, len(child) - 1)
                 # a gene is copied from donor with probability recombination_rate
                 for j in range(len(child)):
-                    if np.random.random() < self.recombination_rate or j == force_idx:
+                    if random.random() < self.recombination_rate or j == force_idx:
                         child[j] = donor[j]
                     # mutate
-                    if np.random.random() < self.mutation_rate:
+                    if random.random() < self.mutation_rate:
                         child[j] = variable_set.variables[j].random_sample()
                 if (
                     child not in individuals
@@ -181,18 +182,13 @@ class GeneticAlgorithm:
         # select parents probabilistically based on fitness
         nb_parents = int(self.population.size() * self.fertility_rate)
         scores = np.array(self.population.fitness_scores)
-        # convert scores to probability
         default = scores.min() / 20
         scores[scores == 0] = default
-        fitness_probs = scores / np.sum(scores)
-        allow_duplicates = True
-        parent_indices = np.random.choice(
-            len(self.population.individuals),
-            size=nb_parents,
-            replace=allow_duplicates,
-            p=fitness_probs,
+        parents = random.choices(
+            population=self.population.individuals,
+            k=nb_parents,
+            weights=scores,
         )
-        parents = [self.population.individuals[i] for i in parent_indices]
         # get new set of individuals and extend population
         new_individuals = self.recombine_and_mutate(parents)
         new_fitness = [self.evaluate_fitness(*ind) for ind in new_individuals]
