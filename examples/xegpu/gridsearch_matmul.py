@@ -14,6 +14,11 @@ import os
 import argparse
 import sys
 from csv_logger import CSVLogger
+from genetic_algorithm import (
+    Variable,
+    VariableSet,
+)
+from lighthouse.schedule.xegpu.mlp_schedule import DPAS_TILE
 
 
 def run_experiment(
@@ -57,186 +62,6 @@ def run_experiment(
     gflops = flop_count / (elapsed * 1e-6) / 1e9
 
     return elapsed, gflops
-
-
-def counted(func):
-    def wrapper(*args, **kwargs):
-        wrapper.call_count += 1
-        return func(*args, **kwargs)
-
-    wrapper.call_count = 0
-    return wrapper
-
-
-@counted
-def check_constraints(params, verbose=False):
-    def print_reason(msg):
-        if verbose:
-            print(f"  Invalid: {msg}")
-
-    # hardware constraints
-    max_nb_sg_threads = 64
-    dpas_tile = [8, 16, 16]
-    load_max_rows = 32
-    load_max_cols = 16
-    pfetch_min_rows = 8
-    pfetch_max_rows = 32
-    pfetch_min_cols = 16
-    pfetch_max_cols = 32
-
-    # heuristics: skip likely suboptimal configurations
-    min_nb_threads = 16
-
-    M = params["M"]
-    N = params["N"]
-    wg_tile_m = params["wg_m"]
-    wg_tile_n = params["wg_n"]
-    sg_tile_m = params["sg_m"]
-    sg_tile_n = params["sg_n"]
-    load_tile_a_m = params["load_a_m"]
-    load_tile_a_k = params["load_a_k"]
-    load_tile_b_k = params["load_b_k"]
-    load_tile_b_n = params["load_b_n"]
-    prefetch_tile_a_m = params["pf_a_m"]
-    prefetch_tile_a_k = params["pf_a_k"]
-    prefetch_tile_b_k = params["pf_b_k"]
-    prefetch_tile_b_n = params["pf_b_n"]
-    k_tile = params["k"]
-
-    if M % wg_tile_m != 0:
-        print_reason("wg_tile_m does not divide M")
-        return False
-    if N % wg_tile_n != 0:
-        print_reason("wg_tile_n does not divide N")
-        return False
-    if wg_tile_m % sg_tile_m != 0:
-        print_reason("sg_tile_m does not divide wg_tile_m")
-        return False
-    if wg_tile_n % sg_tile_n != 0:
-        print_reason("sg_tile_n does not divide wg_tile_n")
-        return False
-    if sg_tile_m % dpas_tile[0] != 0:
-        print_reason("sg_tile_m not multiple of dpas_m")
-        return False
-    if sg_tile_n % dpas_tile[1] != 0:
-        print_reason("sg_tile_n not multiple of dpas_n")
-        return False
-    if k_tile % dpas_tile[2] != 0:
-        print_reason("k_tile not multiple of dpas_k")
-        return False
-
-    # SG level thread layout: [nb_sg_threads_m, nb_sg_threads_n]
-    nb_sg_threads_m = wg_tile_m // sg_tile_m
-    nb_sg_threads_n = wg_tile_n // sg_tile_n
-    nb_sg_threads = nb_sg_threads_m * nb_sg_threads_n
-    if nb_sg_threads > max_nb_sg_threads:
-        print_reason("too many sg threads")
-        return False
-    if nb_sg_threads < min_nb_threads:
-        print_reason("too few sg threads")
-        return False
-
-    if sg_tile_m % load_tile_a_m != 0:
-        print_reason("load_tile_a_m does not divide sg_tile_m")
-        return False
-    if k_tile % load_tile_a_k != 0:
-        print_reason("load_tile_a_k does not divide k_tile")
-        return False
-    if k_tile % load_tile_b_k != 0:
-        print_reason("load_tile_b_k does not divide k_tile")
-        return False
-    if sg_tile_n % load_tile_b_n != 0:
-        print_reason("load_tile_b_n does not divide sg_tile_n")
-        return False
-    if load_tile_a_m > load_max_rows:
-        print_reason("too large load_tile_a_m")
-        return False
-    if load_tile_a_k > load_max_cols:
-        print_reason("too large load_tile_a_k")
-        return False
-    if load_tile_b_k > load_max_rows:
-        print_reason("too large load_tile_b_k")
-        return False
-    if load_tile_b_n > load_max_cols:
-        print_reason("too large load_tile_b_n")
-        return False
-    if sg_tile_m % prefetch_tile_a_m != 0:
-        print_reason("prefetch_tile_a_m does not divide sg_tile_m")
-        return False
-    if k_tile % prefetch_tile_a_k != 0:
-        print_reason("prefetch_tile_a_k does not divide k_tile")
-        return False
-    if k_tile % prefetch_tile_b_k != 0:
-        print_reason("prefetch_tile_b_k does not divide k_tile")
-        return False
-    if sg_tile_n % prefetch_tile_b_n != 0:
-        print_reason("prefetch_tile_b_n does not divide sg_tile_n")
-        return False
-    if prefetch_tile_a_m > pfetch_max_rows:
-        print_reason("too large prefetch_tile_a_m")
-        return False
-    if prefetch_tile_a_k > pfetch_max_cols:
-        print_reason("too large prefetch_tile_a_k")
-        return False
-    if prefetch_tile_b_k > pfetch_max_rows:
-        print_reason("too large prefetch_tile_b_k")
-        return False
-    if prefetch_tile_b_n > pfetch_max_cols:
-        print_reason("too large prefetch_tile_b_n")
-        return False
-    if prefetch_tile_a_m < pfetch_min_rows:
-        print_reason("too small prefetch_tile_a_m")
-        return False
-    if prefetch_tile_a_k < pfetch_min_cols:
-        print_reason("too small prefetch_tile_a_k")
-        return False
-    if prefetch_tile_b_k < pfetch_min_rows:
-        print_reason("too small prefetch_tile_b_k")
-        return False
-    if prefetch_tile_b_n < pfetch_min_cols:
-        print_reason("too small prefetch_tile_b_n")
-        return False
-    if load_tile_a_m % dpas_tile[0] != 0:
-        print_reason("load_tile_a_m not multiple of dpas_m")
-        return False
-    if load_tile_a_k % dpas_tile[2] != 0:
-        print_reason("load_tile_a_k not multiple of dpas_k")
-        return False
-    if load_tile_b_k % dpas_tile[2] != 0:
-        print_reason("load_tile_b_k not multiple of dpas_k")
-        return False
-    if load_tile_b_n % dpas_tile[1] != 0:
-        print_reason("load_tile_b_n not multiple of dpas_n")
-        return False
-
-    nb_load_b_n = load_tile_b_n // dpas_tile[1]
-    if nb_load_b_n > 1:
-        # unsupported VNNI layout, loaded tile can only be row-sliced for vnni
-        # NOTE this can plausibly be relaxed
-        print_reason("invalid load_tile_b_n for VNNI")
-        return False
-
-    # prefetch A layout
-    nb_prefetch_a_m = sg_tile_m // prefetch_tile_a_m
-    nb_prefetch_a_k = k_tile // prefetch_tile_a_k
-    if nb_prefetch_a_m * nb_prefetch_a_k > max_nb_sg_threads:
-        print_reason("too many prefetch A tiles")
-        return False
-    if nb_prefetch_a_m * nb_prefetch_a_k < min_nb_threads:
-        print_reason("too few prefetch A threads")
-        return False
-
-    # prefetch B layout
-    nb_prefetch_b_k = k_tile // prefetch_tile_b_k
-    nb_prefetch_b_n = sg_tile_n // prefetch_tile_b_n
-    if nb_prefetch_b_k * nb_prefetch_b_n > max_nb_sg_threads:
-        print_reason("too many prefetch B tiles")
-        return False
-    if nb_prefetch_b_k * nb_prefetch_b_n < min_nb_threads:
-        print_reason("too few prefetch B threads")
-        return False
-
-    return True
 
 
 def run_with_timeout(*args, timeout=20, **kwargs):
@@ -312,17 +137,242 @@ def execute_kernel(
     return elapsed, gflops
 
 
+def counted(func):
+    def wrapper(*args, **kwargs):
+        wrapper.call_count += 1
+        return func(*args, **kwargs)
+
+    wrapper.call_count = 0
+    return wrapper
+
+
+@counted
+def check_constraints(params, verbose=False):
+    def print_reason(msg):
+        if verbose:
+            print(f"  Invalid: {msg}")
+
+    # hardware constraints
+    max_nb_sg_threads = 64
+    load_max_rows = 32
+    load_max_cols = 16
+    pfetch_min_rows = 8
+    pfetch_max_rows = 32
+    pfetch_min_cols = 16
+    pfetch_max_cols = 32
+
+    # heuristics: skip likely suboptimal configurations
+    min_nb_threads = 16
+
+    M = params["M"]
+    N = params["N"]
+    wg_tile_m = params["wg_m"]
+    wg_tile_n = params["wg_n"]
+    sg_tile_m = params["sg_m"]
+    sg_tile_n = params["sg_n"]
+    load_tile_a_m = params["load_a_m"]
+    load_tile_a_k = params["load_a_k"]
+    load_tile_b_k = params["load_b_k"]
+    load_tile_b_n = params["load_b_n"]
+    prefetch_tile_a_m = params["pf_a_m"]
+    prefetch_tile_a_k = params["pf_a_k"]
+    prefetch_tile_b_k = params["pf_b_k"]
+    prefetch_tile_b_n = params["pf_b_n"]
+    k_tile = params["k"]
+
+    if M % wg_tile_m != 0:
+        print_reason("wg_tile_m does not divide M")
+        return False
+    if N % wg_tile_n != 0:
+        print_reason("wg_tile_n does not divide N")
+        return False
+    if wg_tile_m % sg_tile_m != 0:
+        print_reason("sg_tile_m does not divide wg_tile_m")
+        return False
+    if wg_tile_n % sg_tile_n != 0:
+        print_reason("sg_tile_n does not divide wg_tile_n")
+        return False
+    if sg_tile_m % DPAS_TILE[0] != 0:
+        print_reason("sg_tile_m not multiple of dpas_m")
+        return False
+    if sg_tile_n % DPAS_TILE[1] != 0:
+        print_reason("sg_tile_n not multiple of dpas_n")
+        return False
+    if k_tile % DPAS_TILE[2] != 0:
+        print_reason("k_tile not multiple of dpas_k")
+        return False
+
+    # SG level thread layout: [nb_sg_threads_m, nb_sg_threads_n]
+    nb_sg_threads_m = wg_tile_m // sg_tile_m
+    nb_sg_threads_n = wg_tile_n // sg_tile_n
+    nb_sg_threads = nb_sg_threads_m * nb_sg_threads_n
+    if nb_sg_threads > max_nb_sg_threads:
+        print_reason("too many sg threads")
+        return False
+    if nb_sg_threads < min_nb_threads:
+        print_reason("too few sg threads")
+        return False
+
+    if sg_tile_m % load_tile_a_m != 0:
+        print_reason("load_tile_a_m does not divide sg_tile_m")
+        return False
+    if k_tile % load_tile_a_k != 0:
+        print_reason("load_tile_a_k does not divide k_tile")
+        return False
+    if k_tile % load_tile_b_k != 0:
+        print_reason("load_tile_b_k does not divide k_tile")
+        return False
+    if sg_tile_n % load_tile_b_n != 0:
+        print_reason("load_tile_b_n does not divide sg_tile_n")
+        return False
+    if load_tile_a_m > load_max_rows:
+        print_reason("too large load_tile_a_m")
+        return False
+    if load_tile_a_k > load_max_cols:
+        print_reason("too large load_tile_a_k")
+        return False
+    if load_tile_b_k > load_max_rows:
+        print_reason("too large load_tile_b_k")
+        return False
+    if load_tile_b_n > load_max_cols:
+        print_reason("too large load_tile_b_n")
+        return False
+    if sg_tile_m % prefetch_tile_a_m != 0:
+        print_reason("prefetch_tile_a_m does not divide sg_tile_m")
+        return False
+    if k_tile % prefetch_tile_a_k != 0:
+        print_reason("prefetch_tile_a_k does not divide k_tile")
+        return False
+    if k_tile % prefetch_tile_b_k != 0:
+        print_reason("prefetch_tile_b_k does not divide k_tile")
+        return False
+    if sg_tile_n % prefetch_tile_b_n != 0:
+        print_reason("prefetch_tile_b_n does not divide sg_tile_n")
+        return False
+    if prefetch_tile_a_m > pfetch_max_rows:
+        print_reason("too large prefetch_tile_a_m")
+        return False
+    if prefetch_tile_a_k > pfetch_max_cols:
+        print_reason("too large prefetch_tile_a_k")
+        return False
+    if prefetch_tile_b_k > pfetch_max_rows:
+        print_reason("too large prefetch_tile_b_k")
+        return False
+    if prefetch_tile_b_n > pfetch_max_cols:
+        print_reason("too large prefetch_tile_b_n")
+        return False
+    if prefetch_tile_a_m < pfetch_min_rows:
+        print_reason("too small prefetch_tile_a_m")
+        return False
+    if prefetch_tile_a_k < pfetch_min_cols:
+        print_reason("too small prefetch_tile_a_k")
+        return False
+    if prefetch_tile_b_k < pfetch_min_rows:
+        print_reason("too small prefetch_tile_b_k")
+        return False
+    if prefetch_tile_b_n < pfetch_min_cols:
+        print_reason("too small prefetch_tile_b_n")
+        return False
+    if load_tile_a_m % DPAS_TILE[0] != 0:
+        print_reason("load_tile_a_m not multiple of dpas_m")
+        return False
+    if load_tile_a_k % DPAS_TILE[2] != 0:
+        print_reason("load_tile_a_k not multiple of dpas_k")
+        return False
+    if load_tile_b_k % DPAS_TILE[2] != 0:
+        print_reason("load_tile_b_k not multiple of dpas_k")
+        return False
+    if load_tile_b_n % DPAS_TILE[1] != 0:
+        print_reason("load_tile_b_n not multiple of dpas_n")
+        return False
+
+    nb_load_b_n = load_tile_b_n // DPAS_TILE[1]
+    if nb_load_b_n > 1:
+        # unsupported VNNI layout, loaded tile can only be row-sliced for vnni
+        # NOTE this can plausibly be relaxed
+        print_reason("invalid load_tile_b_n for VNNI")
+        return False
+
+    # prefetch A layout
+    nb_prefetch_a_m = sg_tile_m // prefetch_tile_a_m
+    nb_prefetch_a_k = k_tile // prefetch_tile_a_k
+    if nb_prefetch_a_m * nb_prefetch_a_k > max_nb_sg_threads:
+        print_reason("too many prefetch A tiles")
+        return False
+    if nb_prefetch_a_m * nb_prefetch_a_k < min_nb_threads:
+        print_reason("too few prefetch A threads")
+        return False
+
+    # prefetch B layout
+    nb_prefetch_b_k = k_tile // prefetch_tile_b_k
+    nb_prefetch_b_n = sg_tile_n // prefetch_tile_b_n
+    if nb_prefetch_b_k * nb_prefetch_b_n > max_nb_sg_threads:
+        print_reason("too many prefetch B tiles")
+        return False
+    if nb_prefetch_b_k * nb_prefetch_b_n < min_nb_threads:
+        print_reason("too few prefetch B threads")
+        return False
+
+    return True
+
+
 def get_divisors(n, min_tile=32, max_tile=256):
     p = numpy.ceil(n / max_tile)
     q = n // min_tile
-
     candidates = n / numpy.arange(max(p, 1), q + 1)
-    candidates = [int(v) for v in candidates if v - numpy.round(v) == 0]
+    candidates = [int(v) for v in candidates if int(v) == v]
     return candidates[::-1]
 
 
 def divisible_by(a_list, b):
     return [a for a in a_list if a % b == 0]
+
+
+def construct_search_space(M, N, K):
+    wg_tile_lim_m = min(max(M // 4, 16), 64), min(M, 256)
+    wg_tile_lim_n = min(max(N // 4, 16), 64), min(N, 256)
+    sg_tile_lim_m = min(max(M // 8, 16), 32), min(M, 128)
+    sg_tile_lim_n = min(max(N // 8, 16), 32), min(N, 128)
+
+    wg_tiles_m = divisible_by(get_divisors(M, *wg_tile_lim_m), DPAS_TILE[0])
+    wg_tiles_n = divisible_by(get_divisors(N, *wg_tile_lim_n), DPAS_TILE[1])
+    sg_tiles_m = divisible_by(get_divisors(M, *sg_tile_lim_m), DPAS_TILE[0])
+    sg_tiles_n = divisible_by(get_divisors(N, *sg_tile_lim_n), DPAS_TILE[1])
+    k_tiles = divisible_by(get_divisors(K, 16, min(K, 256)), DPAS_TILE[2])
+    load_tiles = [8, 16, 32]
+    prefetches = [1]
+
+    def sample_is_valid(sample_params, verbose=False):
+        params = {"M": M, "N": N, "K": K}
+        params.update(sample_params)
+        return check_constraints(params, verbose=verbose)
+
+    var_set = VariableSet(
+        [
+            Variable("wg_m", wg_tiles_m),
+            Variable("wg_n", wg_tiles_n),
+            Variable("sg_m", sg_tiles_m),
+            Variable("sg_n", sg_tiles_n),
+            Variable("k", k_tiles),
+            Variable("load_a_m", load_tiles),
+            Variable("load_a_k", load_tiles),
+            Variable("load_b_k", load_tiles),
+            Variable("load_b_n", load_tiles),
+            Variable("pf_a_m", load_tiles),
+            Variable("pf_a_k", load_tiles),
+            Variable("pf_b_k", load_tiles),
+            Variable("pf_b_n", load_tiles),
+            Variable("pf_nb", prefetches),
+        ],
+        is_valid_fn=sample_is_valid,
+    )
+
+    def sample_to_dict(sample: list) -> dict:
+        res = {"M": M, "N": N, "K": K}
+        res.update(var_set.sample_to_dict(sample))
+        return res
+
+    return var_set, sample_to_dict
 
 
 if __name__ == "__main__":
@@ -347,7 +397,7 @@ if __name__ == "__main__":
     # --------------------
 
     # run loop but do not execute experiments
-    dry_run = False
+    dry_run = True
 
     # fixed parameters
     sizes = [4096, 4096, 4096]
@@ -360,12 +410,9 @@ if __name__ == "__main__":
     verbose = True
     check_result = True
     dump_kernel = False
-    nwarmup = 300
-    nruns = 500
+    nwarmup = 50
+    nruns = 200
     timeout = 60
-
-    # hardware constraints
-    dpas_tile = [8, 16, 16]
 
     # env
     os.environ["NEO_CACHE_PERSISTENT"] = "0"  # disable compiler cache
@@ -373,18 +420,7 @@ if __name__ == "__main__":
     csv_file = "out_gridsearch.csv"
     csv_logger = CSVLogger(csv_file, args.cont)
 
-    wg_tile_lim_m = min(max(M // 4, 16), 64), min(M, 256)
-    wg_tile_lim_n = min(max(N // 4, 16), 64), min(N, 256)
-    sg_tile_lim_m = min(max(M // 8, 16), 32), min(M, 128)
-    sg_tile_lim_n = min(max(N // 8, 16), 32), min(N, 128)
-
-    wg_tiles_m = divisible_by(get_divisors(M, *wg_tile_lim_m), dpas_tile[0])
-    wg_tiles_n = divisible_by(get_divisors(N, *wg_tile_lim_n), dpas_tile[1])
-    sg_tiles_m = divisible_by(get_divisors(M, *sg_tile_lim_m), dpas_tile[0])
-    sg_tiles_n = divisible_by(get_divisors(N, *sg_tile_lim_n), dpas_tile[1])
-    k_tiles = divisible_by(get_divisors(K, 16, min(K, 256)), dpas_tile[2])
-    load_tiles = [8, 16, 32]
-    prefetches = [1]
+    var_set, sample_to_dict = construct_search_space(M, N, K)
 
     print(f"Matmul problem size: {sizes}")
     print(f"{ab_type=}")
@@ -392,78 +428,21 @@ if __name__ == "__main__":
     print(f"{has_bias=}")
     print(f"{has_relu=}")
     print(f"{accumulate_c=}")
+    print(f"{nwarmup=}")
+    print(f"{nruns=}")
 
-    print(f"{wg_tiles_m=}")
-    print(f"{wg_tiles_n=}")
-    print(f"{sg_tiles_m=}")
-    print(f"{sg_tiles_n=}")
-    print(f"{k_tiles=}")
-    print(f"{load_tiles=}")
-    print(f"{prefetches=}")
-
-    iterables = [
-        wg_tiles_m,  # WG m
-        wg_tiles_n,  # WG n
-        sg_tiles_m,  # SG m
-        sg_tiles_n,  # SG n
-        k_tiles,  # reduction k
-        load_tiles,  # load tile A m
-        load_tiles,  # load tile A k
-        load_tiles,  # load tile B k
-        load_tiles,  # load tile B n
-        load_tiles,  # prefetch tile A m
-        load_tiles,  # prefetch tile A k
-        load_tiles,  # prefetch tile B k
-        load_tiles,  # prefetch tile B n
-        prefetches,  # nb prefetch
-    ]
-    total_complexity = numpy.prod([len(x) for x in iterables])
-    print(f"Total complexity: {total_complexity} configurations")
+    var_set.print()
 
     i = 0
     tic = perf_counter()
-    for (
-        wg_tile_m,
-        wg_tile_n,
-        sg_tile_m,
-        sg_tile_n,
-        k_tile,
-        load_tile_a_m,
-        load_tile_a_k,
-        load_tile_b_k,
-        load_tile_b_n,
-        prefetch_tile_a_m,
-        prefetch_tile_a_k,
-        prefetch_tile_b_k,
-        prefetch_tile_b_n,
-        nb_prefetch,
-    ) in product(*iterables):
-        params = {
-            "M": M,
-            "N": N,
-            "K": K,
-            "wg_m": wg_tile_m,
-            "wg_n": wg_tile_n,
-            "sg_m": sg_tile_m,
-            "sg_n": sg_tile_n,
-            "k": k_tile,
-            "load_a_m": load_tile_a_m,
-            "load_a_k": load_tile_a_k,
-            "load_b_k": load_tile_b_k,
-            "load_b_n": load_tile_b_n,
-            "pf_a_m": prefetch_tile_a_m,
-            "pf_a_k": prefetch_tile_a_k,
-            "pf_b_k": prefetch_tile_b_k,
-            "pf_b_n": prefetch_tile_b_n,
-            "pf_nb": nb_prefetch,
-        }
-
+    for sample in product(*var_set.iterables()):
+        params = sample_to_dict(sample)
+        if not check_constraints(params, verbose=False):
+            continue
         if args.cont and csv_logger.contains(params):
             print("SKIP existing configuration")
             continue
 
-        if not check_constraints(params, verbose=False):
-            continue
         i += 1
         if dry_run:
             continue

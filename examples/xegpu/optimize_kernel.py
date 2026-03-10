@@ -8,13 +8,10 @@ import sys
 from typing import Optional
 import numpy as np
 from gridsearch_matmul import (
-    get_divisors,
-    divisible_by,
     check_constraints,
+    construct_search_space,
 )
 from genetic_algorithm import (
-    Variable,
-    VariableSet,
     init_random_population,
     GeneticAlgorithm,
     load_experiment_data,
@@ -43,25 +40,16 @@ def optimize_kernel(
 
     M, N, K = sizes
     timeout = 50
-    dpas_tile = [8, 16, 16]
 
     # Estimate required number of iterations
     # NOTE For large problems compile time can also be significant, > 1 s
     complexity = 2 * M * N * K  # floating point ops
     throughput = 40e12  # typical value, flops
     time_estimate = complexity / throughput  # seconds
-    duration = 0.8  # desired warm-up duration in seconds
-    iterations = int(max(50, int(duration / time_estimate)))
+    duration = 0.5  # desired warm-up duration in seconds
+    iterations = max(20, int(duration / time_estimate))
     nwarmup = iterations
     nruns = int(1.5 * iterations)
-
-    wg_tiles_m = divisible_by(get_divisors(M, 16, 256), dpas_tile[0])
-    wg_tiles_n = divisible_by(get_divisors(N, 64, 256), dpas_tile[1])
-    sg_tiles_m = divisible_by(get_divisors(M, 16, 128), dpas_tile[0])
-    sg_tiles_n = divisible_by(get_divisors(N, 32, 128), dpas_tile[1])
-    k_tiles = divisible_by(get_divisors(K, 16, 256), dpas_tile[2])
-    load_tiles = [8, 16, 32]
-    nb_prefetch = [1]
 
     # genetic algorithm parameters
     npop = 14
@@ -70,83 +58,16 @@ def optimize_kernel(
     mutation_rate = 0.001
     fertility_rate = 1.0
 
+    var_set, sample_to_dict = construct_search_space(M, N, K)
     print(f"Matmul problem size: {sizes}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
     print(f"{has_bias=}")
     print(f"{has_relu=}")
     print(f"{accumulate_c=}")
-    print(f"{wg_tiles_m=}")
-    print(f"{wg_tiles_n=}")
-    print(f"{sg_tiles_m=}")
-    print(f"{sg_tiles_n=}")
-    print(f"{k_tiles=}")
-    print(f"{load_tiles=}")
-    print(f"{nb_prefetch=}")
-
     print(f"{nwarmup=}")
     print(f"{nruns=}")
-
-    wg_m = Variable("wg_m", wg_tiles_m)
-    wg_n = Variable("wg_n", wg_tiles_n)
-    sg_m = Variable("sg_m", sg_tiles_m)
-    sg_n = Variable("sg_n", sg_tiles_n)
-    k_tile = Variable("k", k_tiles)
-    load_tile_a_m = Variable("load_a_m", load_tiles)
-    load_tile_a_k = Variable("load_a_k", load_tiles)
-    load_tile_b_k = Variable("load_b_k", load_tiles)
-    load_tile_b_n = Variable("load_b_n", load_tiles)
-    prefetch_tile_a_m = Variable("pf_a_m", load_tiles)
-    prefetch_tile_a_k = Variable("pf_a_k", load_tiles)
-    prefetch_tile_b_k = Variable("pf_b_k", load_tiles)
-    prefetch_tile_b_n = Variable("pf_b_n", load_tiles)
-    nb_prefetch = Variable("pf_nb", nb_prefetch)
-
-    def params_to_dict(sample: list) -> dict:
-        return {
-            "M": M,
-            "N": N,
-            "K": K,
-            "wg_m": sample[0],
-            "wg_n": sample[1],
-            "sg_m": sample[2],
-            "sg_n": sample[3],
-            "k": sample[4],
-            "load_a_m": sample[5],
-            "load_a_k": sample[6],
-            "load_b_k": sample[7],
-            "load_b_n": sample[8],
-            "pf_a_m": sample[9],
-            "pf_a_k": sample[10],
-            "pf_b_k": sample[11],
-            "pf_b_n": sample[12],
-            "pf_nb": sample[13],
-        }
-
-    def is_valid_fn(sample: list) -> bool:
-        params = params_to_dict(sample)
-        return check_constraints(params, verbose=False)
-
-    var_set = VariableSet(
-        [
-            wg_m,
-            wg_n,
-            sg_m,
-            sg_n,
-            k_tile,
-            load_tile_a_m,
-            load_tile_a_k,
-            load_tile_b_k,
-            load_tile_b_n,
-            prefetch_tile_a_m,
-            prefetch_tile_a_k,
-            prefetch_tile_b_k,
-            prefetch_tile_b_n,
-            nb_prefetch,
-        ],
-        is_valid_fn=is_valid_fn,
-    )
-    print(f"Total search space size: {var_set.complexity()}")
+    var_set.print()
     sys.stdout.flush()
 
     if dry_run:
@@ -187,7 +108,7 @@ def optimize_kernel(
                 nruns,
                 nwarmup,
                 check_result,
-                params_to_dict(parameters),
+                sample_to_dict(parameters),
                 timeout=timeout,
                 ab_type=ab_type,
                 c_type=c_type,
@@ -211,14 +132,13 @@ def optimize_kernel(
     pop.print()
 
     ga_optimizer.optimize(ngen=ngenerations, verbose=1)
-    pop.sort()
 
     print("Best configurations found:")
     for params in pop.individuals:
         time, gflops = perf_cache.get(tuple(params), (0.0, 0.0))
         print(f" Time: {time:.2f} us, GFLOPS: {gflops:.2f}: {params}")
-    print(f"\nNumber of cost function evaluations: {nb_new_evaluations}")
     print(f"Number of constraint checks: {check_constraints.call_count}")
+    print(f"\nNumber of kernel evaluations: {nb_new_evaluations}")
 
 
 def parse_cli():

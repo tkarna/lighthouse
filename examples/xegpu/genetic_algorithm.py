@@ -40,9 +40,20 @@ class VariableSet:
         return total
 
     def is_valid(self, sample: list) -> bool:
-        if self.is_valid_fn is None:
-            return True
-        return self.is_valid_fn(sample)
+        return self.is_valid_fn(self.sample_to_dict(sample))
+
+    def sample_to_dict(self, sample):
+        assert len(sample) == len(self.variables)
+        return dict(zip(self.names(), sample))
+
+    def iterables(self):
+        return [v.choices for v in self.variables]
+
+    def print(self):
+        print("Variable set:")
+        for v in self.variables:
+            print(f"{v.name}={v.choices}")
+        print(f"Total complexity: {self.complexity()} configurations")
 
 
 class Population:
