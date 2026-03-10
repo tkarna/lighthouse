@@ -41,15 +41,8 @@ def optimize_kernel(
     M, N, K = sizes
     timeout = 50
 
-    # Estimate required number of iterations
-    # NOTE For large problems compile time can also be significant, > 1 s
-    complexity = 2 * M * N * K  # floating point ops
-    throughput = 40e12  # typical value, flops
-    time_estimate = complexity / throughput  # seconds
-    duration = 0.5  # desired warm-up duration in seconds
-    iterations = max(20, int(duration / time_estimate))
-    nwarmup = iterations
-    nruns = int(1.5 * iterations)
+    nwarmup = None
+    nruns = None
 
     # genetic algorithm parameters
     npop = 14

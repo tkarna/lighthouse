@@ -24,8 +24,8 @@ from lighthouse.schedule.xegpu.mlp_schedule import DPAS_TILE
 def run_experiment(
     ab_type="f16",
     c_type="f32",
-    nruns=100,
-    nwarmup=20,
+    nruns=None,
+    nwarmup=None,
     check_result=False,
     has_bias=False,
     has_relu=False,
@@ -47,6 +47,23 @@ def run_experiment(
             has_relu=has_relu,
             accumulate_c=accumulate_c,
         )
+        if nruns is None and nwarmup is None:
+            # first run to estimate cost
+            times = benchmark(
+                wload,
+                nruns=10,
+                nwarmup=10,
+                schedule_parameters=params,
+                check_correctness=False,
+                verbose=0,
+            )
+            # estimate number of runs
+            cost = times.mean()
+            warmup_target = 0.5
+            nwarmup = max(int(warmup_target / cost), 10)
+            nruns = 3 * nwarmup
+            print(f"{nwarmup=} {nruns=}")
+        # benchmark
         times = benchmark(
             wload,
             nruns=nruns,
@@ -410,8 +427,8 @@ if __name__ == "__main__":
     verbose = True
     check_result = True
     dump_kernel = False
-    nwarmup = 50
-    nruns = 200
+    nwarmup = None
+    nruns = None
     timeout = 60
 
     # env
@@ -421,7 +438,6 @@ if __name__ == "__main__":
     csv_logger = CSVLogger(csv_file, args.cont)
 
     var_set, sample_to_dict = construct_search_space(M, N, K)
-
     print(f"Matmul problem size: {sizes}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
@@ -430,7 +446,6 @@ if __name__ == "__main__":
     print(f"{accumulate_c=}")
     print(f"{nwarmup=}")
     print(f"{nruns=}")
-
     var_set.print()
 
     i = 0
