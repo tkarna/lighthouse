@@ -16,7 +16,7 @@ from genetic_algorithm import (
     GeneticAlgorithm,
     load_experiment_data,
 )
-from gridsearch_matmul import execute_kernel
+from gridsearch_matmul import execute_and_log
 from csv_logger import CSVLogger
 
 # count the number of executed kernels
@@ -96,7 +96,7 @@ def optimize_kernel(
             else:
                 return float("inf")
         else:
-            elapsed, gflops = execute_kernel(
+            elapsed, gflops = execute_and_log(
                 csv_logger,
                 nruns,
                 nwarmup,

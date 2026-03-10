@@ -1,8 +1,3 @@
-from matmul import XeGPUMatMul
-from mlir import ir
-
-from lighthouse.workload import benchmark
-
 from time import perf_counter
 import multiprocessing
 from multiprocessing.sharedctypes import Value
@@ -14,11 +9,17 @@ import os
 import argparse
 import sys
 from csv_logger import CSVLogger
+
+from mlir import ir
+
+from lighthouse.workload import benchmark
+from lighthouse.schedule.xegpu.mlp_schedule import DPAS_TILE
+
+from matmul import XeGPUMatMul
 from genetic_algorithm import (
     Variable,
     VariableSet,
 )
-from lighthouse.schedule.xegpu.mlp_schedule import DPAS_TILE
 
 
 def run_experiment(
@@ -86,7 +87,6 @@ def run_with_timeout(*args, timeout=20, **kwargs):
     Wrapper to execute the experiment with a new thread and a timeout.
 
     Experiments must be run in a new process to ensure reliable timings.
-    Otherwise, IGC compiler may not be invoked.
 
     Sends kill signal if timeout is reached.
     """
@@ -112,7 +112,7 @@ def run_with_timeout(*args, timeout=20, **kwargs):
     return timing.value, gflops.value
 
 
-def execute_kernel(
+def execute_and_log(
     csv_logger,
     nruns,
     nwarmup,
@@ -461,7 +461,7 @@ if __name__ == "__main__":
         i += 1
         if dry_run:
             continue
-        execute_kernel(
+        execute_and_log(
             csv_logger,
             nruns,
             nwarmup,
