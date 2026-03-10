@@ -20,7 +20,7 @@ from genetic_algorithm import (
     load_experiment_data,
 )
 from gridsearch_matmul import execute_kernel
-from gridsearch_matmul import CSVLogger
+from csv_logger import CSVLogger
 
 # count the number of executed kernels
 nb_new_evaluations = 0
