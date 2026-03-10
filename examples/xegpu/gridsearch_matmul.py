@@ -138,6 +138,7 @@ def check_constraints(params, verbose=False):
     pfetch_max_rows = 32
     pfetch_min_cols = 16
     pfetch_max_cols = 32
+    min_nb_threads = 8
 
     # heuristics
     # small_load_tile_elems = 16 * 16  # skip smaller load tiles
@@ -187,6 +188,9 @@ def check_constraints(params, verbose=False):
     nb_sg_threads = nb_sg_threads_m * nb_sg_threads_n
     if nb_sg_threads > max_nb_sg_threads:
         print_reason("too many sg threads")
+        return False
+    if nb_sg_threads < min_nb_threads:
+        print_reason("too few sg threads")
         return False
 
     if sg_tile_m % load_tile_a_m != 0:
@@ -290,8 +294,10 @@ def check_constraints(params, verbose=False):
     nb_prefetch_a_m = sg_tile_m // prefetch_tile_a_m
     nb_prefetch_a_k = k_tile // prefetch_tile_a_k
     if nb_prefetch_a_m * nb_prefetch_a_k > max_nb_sg_threads:
-        # too many prefetch tiles
         print_reason("too many prefetch A tiles")
+        return False
+    if nb_prefetch_a_m * nb_prefetch_a_k < min_nb_threads:
+        print_reason("too few prefetch A threads")
         return False
 
     # if prefetch_tile_a_m * prefetch_tile_a_k < small_load_tile_elems:
@@ -307,8 +313,10 @@ def check_constraints(params, verbose=False):
     nb_prefetch_b_k = k_tile // prefetch_tile_b_k
     nb_prefetch_b_n = sg_tile_n // prefetch_tile_b_n
     if nb_prefetch_b_k * nb_prefetch_b_n > max_nb_sg_threads:
-        # too many prefetch tiles
         print_reason("too many prefetch B tiles")
+        return False
+    if nb_prefetch_b_k * nb_prefetch_b_n < min_nb_threads:
+        print_reason("too few prefetch B threads")
         return False
     # if prefetch_tile_b_k * prefetch_tile_b_n < small_load_tile_elems:
     #     # skip small prefetch tiles
