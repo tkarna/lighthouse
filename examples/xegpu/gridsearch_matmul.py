@@ -14,6 +14,7 @@ import logging
 import csv
 import os
 import argparse
+import sys
 
 
 def run_experiment(
@@ -42,7 +43,6 @@ def run_experiment(
             has_relu=has_relu,
             accumulate_c=accumulate_c,
         )
-
         times = benchmark(
             wload,
             nruns=nruns,
@@ -51,12 +51,13 @@ def run_experiment(
             check_correctness=check_result,
             verbose=1,
         )
-        times *= 1e6  # convert to microseconds
-        elapsed = numpy.mean(times)
-        flop_count = wload.get_complexity()[0]
-        gflops = flop_count / (elapsed * 1e-6) / 1e9
 
-        return elapsed, gflops
+    times *= 1e6  # convert to microseconds
+    elapsed = numpy.mean(times)
+    flop_count = wload.get_complexity()[0]
+    gflops = flop_count / (elapsed * 1e-6) / 1e9
+
+    return elapsed, gflops
 
 
 class CSVLogger:
@@ -138,11 +139,9 @@ def check_constraints(params, verbose=False):
     pfetch_max_rows = 32
     pfetch_min_cols = 16
     pfetch_max_cols = 32
-    min_nb_threads = 8
 
-    # heuristics
-    # small_load_tile_elems = 16 * 16  # skip smaller load tiles
-    # max_nb_unrolled_dpas_ops = 64
+    # heuristics: skip likely suboptimal configurations
+    min_nb_threads = 8
 
     M = params["M"]
     N = params["N"]
@@ -266,23 +265,6 @@ def check_constraints(params, verbose=False):
         print_reason("load_tile_b_n not multiple of dpas_n")
         return False
 
-    # if load_tile_a_m * load_tile_a_k < small_load_tile_elems:
-    #     # skip small load tiles
-    #     print_reason("too small load_tile_a")
-    #     return False
-    # if load_tile_b_k * load_tile_b_n < small_load_tile_elems:
-    #     # skip small load tiles
-    #     print_reason("too small load_tile_b")
-    #     return False
-    # if load_tile_a_m > load_tile_a_k:
-    #     # skip tall and skinny load tiles
-    #     print_reason("invalid load_tile_a shape")
-    #     return False
-    # if load_tile_b_k > load_tile_b_n:
-    #     # skip tall and skinny load tiles
-    #     print_reason("invalid load_tile_b shape")
-    #     return False
-
     nb_load_b_n = load_tile_b_n // dpas_tile[1]
     if nb_load_b_n > 1:
         # unsupported VNNI layout, loaded tile can only be row-sliced for vnni
@@ -300,15 +282,6 @@ def check_constraints(params, verbose=False):
         print_reason("too few prefetch A threads")
         return False
 
-    # if prefetch_tile_a_m * prefetch_tile_a_k < small_load_tile_elems:
-    #     # skip small prefetch tiles
-    #     print_reason("too small prefetch A tile")
-    #     return False
-    # if prefetch_tile_a_m > prefetch_tile_a_k:
-    #     # skip column tiles
-    #     print_reason("invalid prefetch_tile_a shape")
-    #     return False
-
     # prefetch B layout
     nb_prefetch_b_k = k_tile // prefetch_tile_b_k
     nb_prefetch_b_n = sg_tile_n // prefetch_tile_b_n
@@ -318,23 +291,6 @@ def check_constraints(params, verbose=False):
     if nb_prefetch_b_k * nb_prefetch_b_n < min_nb_threads:
         print_reason("too few prefetch B threads")
         return False
-    # if prefetch_tile_b_k * prefetch_tile_b_n < small_load_tile_elems:
-    #     # skip small prefetch tiles
-    #     print_reason("too small prefetch B tile")
-    #     return False
-    # if prefetch_tile_b_k > prefetch_tile_b_n:
-    #     # skip column tiles
-    #     print_reason("invalid prefetch_tile_b shape")
-    #     return False
-
-    # # estimate register usage
-    # nb_dpas_m = sg_tile_m // dpas_tile[0]
-    # nb_dpas_n = sg_tile_n // dpas_tile[1]
-    # nb_dpas_k = k_tile // dpas_tile[2]
-    # # number of unrolled dpas ops: nb_dpas_m * nb_dpas_n * nb_dpas_k
-    # if nb_dpas_m * nb_dpas_n * nb_dpas_k > max_nb_unrolled_dpas_ops:
-    #     print_reason("too many unrolled dpas ops")
-    #     return False
 
     return True
 
@@ -408,6 +364,7 @@ def execute_kernel(
         print("FAILED")
         print(entry)
         print(f"  Error: {e}")
+    sys.stdout.flush()
     return elapsed, gflops
 
 
