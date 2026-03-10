@@ -2,7 +2,6 @@
 Genetic algorithm-based optimization of kernel parameters.
 """
 
-import random
 import argparse
 from functools import cache
 import sys
@@ -37,7 +36,6 @@ def optimize_kernel(
 ):
     # set random seed for reproducibility
     seed = 2
-    random.seed(seed)
     np.random.seed(seed)
 
     M, N, K = sizes

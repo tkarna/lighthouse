@@ -2,7 +2,6 @@
 Genetic algorithm-based optimization of kernel parameters.
 """
 
-import random
 import csv
 import numpy as np
 import time
@@ -14,7 +13,7 @@ class Variable:
         self.choices = choices
 
     def random_sample(self):
-        return random.choice(self.choices)
+        return int(np.random.choice(self.choices))
 
 
 class VariableSet:
@@ -129,19 +128,19 @@ class GeneticAlgorithm:
         npopulation = len(individuals)
         for i in range(npopulation):
             parent = individuals[i]
-            donor_idx = random.choice([j for j in range(npopulation) if j != i])
+            donor_idx = int(np.random.choice([j for j in range(npopulation) if j != i]))
             donor = individuals[donor_idx]
             for _ in range(self.ntrials):
                 child = parent.copy()
                 # perform recombination
                 # one gene is always copied from donor
-                force_idx = random.randint(0, len(child) - 1)
+                force_idx = np.random.randint(0, len(child) - 1)
                 # a gene is copied from donor with probability recombination_rate
                 for j in range(len(child)):
-                    if random.random() < self.recombination_rate or j == force_idx:
+                    if np.random.random() < self.recombination_rate or j == force_idx:
                         child[j] = donor[j]
                     # mutate
-                    if random.random() < self.mutation_rate:
+                    if np.random.random() < self.mutation_rate:
                         child[j] = variable_set.variables[j].random_sample()
                 if (
                     child not in individuals
@@ -171,11 +170,13 @@ class GeneticAlgorithm:
         fitness_probs = 1.0 / (scores + 1e-8)
         fitness_probs /= np.sum(fitness_probs)
         allow_duplicates = True
-        parent_indices = np.random.choice(
-            len(self.population.individuals),
-            size=nb_parents,
-            replace=allow_duplicates,
-            p=fitness_probs,
+        parent_indices = int(
+            np.random.choice(
+                len(self.population.individuals),
+                size=nb_parents,
+                replace=allow_duplicates,
+                p=fitness_probs,
+            )
         )
         parents = [self.population.individuals[i] for i in parent_indices]
         # get new set of individuals and extend population
