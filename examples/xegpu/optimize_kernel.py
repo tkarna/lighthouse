@@ -5,6 +5,7 @@ Genetic algorithm-based optimization of kernel parameters.
 import random
 import argparse
 from functools import cache
+import sys
 import numpy as np
 from gridsearch_matmul import (
     get_divisors,
@@ -145,6 +146,7 @@ def optimize_kernel(
         is_valid_fn=is_valid_fn,
     )
     print(f"Total search space size: {var_set.complexity()}")
+    sys.stdout.flush()
 
     if dry_run:
         # load experiment data from csv file
@@ -164,6 +166,7 @@ def optimize_kernel(
         csv_logger = CSVLogger(csv_file)
 
     gflops_cache = {}
+    global nb_new_evaluations
     nb_new_evaluations = 0
 
     @cache
@@ -211,7 +214,7 @@ def optimize_kernel(
     print("Best configurations found:")
     for params, time in zip(pop.individuals, pop.fitness_scores):
         gflops = gflops_cache.get(tuple(params), 0.0)
-        print(f" Time: {time:.2f} ms, GFLOPS: {gflops:.2f}: {params}")
+        print(f" Time: {time:.2f} us, GFLOPS: {gflops:.2f}: {params}")
     print(f"\nNumber of cost function evaluations: {nb_new_evaluations}")
     print(f"Number of constraint checks: {check_constraints.call_count}")
 
