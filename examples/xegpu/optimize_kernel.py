@@ -2,11 +2,11 @@
 Genetic algorithm-based optimization of kernel parameters.
 """
 
-import argparse
 from functools import cache
 import sys
 from typing import Optional
 import numpy as np
+from matmul import cli_parser
 from gridsearch_matmul import (
     check_constraints,
     construct_search_space,
@@ -134,46 +134,11 @@ def optimize_kernel(
     print(f"\nNumber of kernel evaluations: {nb_new_evaluations}")
 
 
-def parse_cli():
-    parser = argparse.ArgumentParser(
-        description="Optimize matmul kernel parameters using a genetic algorithm.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument(
-        "--sizes",
-        type=int,
-        nargs=3,
-        default=[4096, 4096, 4096],
-        help="M,N,K matrix sizes (A=MxK, B=KxN, C=MxN).",
-    )
-    parser.add_argument(
-        "--bias",
-        action="store_true",
-        help="Add bias op after the matrix multiplication.",
-    )
-    parser.add_argument(
-        "--relu",
-        action="store_true",
-        help="Add relu op after the matrix multiplication (and bias if any).",
-    )
-    parser.add_argument(
-        "--no-accumulate-c",
-        action="store_true",
-        help="Compute plain matrix-multiply C=A*B instead of matrix-multiply-accumulate C+=A*B.",
-    )
-    parser.add_argument(
-        "--check-result",
-        action="store_true",
-        help="Check the result of the matrix multiplication.",
+if __name__ == "__main__":
+    parser = cli_parser(
+        description="Optimize matmul kernel parameters using a genetic algorithm."
     )
     args = parser.parse_args()
-
-    return args
-
-
-if __name__ == "__main__":
-    args = parse_cli()
-    check_result = True
 
     # do not execute kernels, look up timings from experiment data
     dry_run = False
@@ -184,6 +149,6 @@ if __name__ == "__main__":
         args.relu,
         not args.no_accumulate_c,
         dry_run=dry_run,
-        check_result=check_result,
+        check_result=args.check_result,
         random_seed=2,
     )

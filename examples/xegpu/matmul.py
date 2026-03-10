@@ -207,9 +207,10 @@ class XeGPUMatMul(XeGPUWorkload):
         return ["libmlir_levelzero_runtime.so"]
 
 
-def parse_cli():
+def cli_parser(description="Matrix Multiplication using MLIR"):
+    """CLI argument parser for args shared with autotuner."""
     parser = argparse.ArgumentParser(
-        description="Matrix Multiplication using MLIR",
+        description=description,
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -219,6 +220,31 @@ def parse_cli():
         default=[4096, 4096, 4096],
         help="M,N,K matrix sizes (A=MxK, B=KxN, C=MxN).",
     )
+    parser.add_argument(
+        "--bias",
+        action="store_true",
+        help="Add bias after the matrix multiplication.",
+    )
+    parser.add_argument(
+        "--relu",
+        action="store_true",
+        help="Add relu op after the matrix multiplication (and bias if any).",
+    )
+    parser.add_argument(
+        "--no-accumulate-c",
+        action="store_true",
+        help="Compute plain matrix-multiply C=A*B instead of matrix-multiply-accumulate C+=A*B.",
+    )
+    parser.add_argument(
+        "--check-result",
+        action="store_true",
+        help="Check the result of the matrix multiplication.",
+    )
+    return parser
+
+
+def parse_cli_args():
+    parser = cli_parser()
     parser.add_argument(
         "--wg-tile",
         type=int,
@@ -286,26 +312,6 @@ def parse_cli():
         help="Number of warm-up iterations before benchmarking.",
     )
     parser.add_argument(
-        "--bias",
-        action="store_true",
-        help="Add bias after the matrix multiplication.",
-    )
-    parser.add_argument(
-        "--relu",
-        action="store_true",
-        help="Add relu op after the matrix multiplication (and bias if any).",
-    )
-    parser.add_argument(
-        "--no-accumulate-c",
-        action="store_true",
-        help="Compute plain matrix-multiply C=A*B instead of matrix-multiply-accumulate C+=A*B.",
-    )
-    parser.add_argument(
-        "--check-result",
-        action="store_true",
-        help="Check the result of the matrix multiplication.",
-    )
-    parser.add_argument(
         "--dump-kernel",
         type=str,
         choices=[
@@ -331,7 +337,7 @@ def parse_cli():
 
 
 if __name__ == "__main__":
-    args = parse_cli()
+    args = parse_cli_args()
 
     params = {
         "wg_m": args.wg_tile[0],
@@ -389,17 +395,16 @@ if __name__ == "__main__":
             def list2str(a):
                 return ",".join(map(str, a))
 
-            parts = [
-                f"sizes={list2str(args.sizes)}",
-                f"dt={ab_type},{c_type}",
-                f"wg-tile={list2str(args.wg_tile)}",
-                f"sg-tile={list2str(args.sg_tile)}",
-                f"k-tile={args.k_tile}",
-                f"load-a-tile={list2str(args.load_tile_a)}",
-                f"load-b-tile={list2str(args.load_tile_b)}",
-                f"pf-a-tile={list2str(args.prefetch_tile_a)}",
-                f"pf-b-tile={list2str(args.prefetch_tile_b)}",
-                f"time(us): {elapsed:.2f}",
-                f"GFLOPS: {gflops:.2f}",
-            ]
-            print(" ".join(parts))
+            print(
+                f"sizes={list2str(args.sizes)} "
+                f"dt={ab_type},{c_type} "
+                f"wg-tile={list2str(args.wg_tile)} "
+                f"sg-tile={list2str(args.sg_tile)} "
+                f"k-tile={args.k_tile} "
+                f"load-a-tile={list2str(args.load_tile_a)} "
+                f"load-b-tile={list2str(args.load_tile_b)} "
+                f"pf-a-tile={list2str(args.prefetch_tile_a)} "
+                f"pf-b-tile={list2str(args.prefetch_tile_b)} "
+                f"time(us): {elapsed:.2f} "
+                f"GFLOPS: {gflops:.2f}"
+            )

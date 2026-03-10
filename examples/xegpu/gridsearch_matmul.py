@@ -6,7 +6,6 @@ from datetime import timedelta
 from itertools import product
 import numpy
 import os
-import argparse
 import sys
 from csv_logger import CSVLogger
 
@@ -15,7 +14,7 @@ from mlir import ir
 from lighthouse.workload import benchmark
 from lighthouse.schedule.xegpu.mlp_schedule import DPAS_TILE
 
-from matmul import XeGPUMatMul
+from matmul import XeGPUMatMul, cli_parser
 from genetic_algorithm import (
     Variable,
     VariableSet,
@@ -393,40 +392,34 @@ def construct_search_space(M, N, K):
 
 
 if __name__ == "__main__":
-    # --------------------
-    #  args
-    # --------------------
-    parser = argparse.ArgumentParser(
-        description="tuning gridsearch for matmul",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    parser = cli_parser(
+        description="Optimize matmul kernel parameters using a exhaustive search."
     )
     parser.add_argument(
         "--continue",
         "-c",
         dest="cont",
         action="store_true",
-        help="skip configurations already existing in the CSV log file",
+        help="Skip configurations already existing in the CSV log file.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Check validity of combinations but do not execute kernels.",
     )
     args = parser.parse_args()
 
-    # --------------------
-    #  driver
-    # --------------------
-
-    # run loop but do not execute experiments
-    dry_run = True
-
-    # fixed parameters
-    sizes = [4096, 4096, 4096]
-    has_bias = False
-    has_relu = False
-    accumulate_c = True
-    M, N, K = sizes
+    M, N, K = args.sizes
+    has_bias = args.bias
+    has_relu = args.relu
+    accumulate_c = not args.no_accumulate_c
     ab_type = "f16"
     c_type = "f32"
     verbose = True
-    check_result = True
-    dump_kernel = False
+    check_result = args.check_result
+    append = args.cont
+    dry_run = args.dry_run
+
     nwarmup = None
     nruns = None
     timeout = 60
@@ -434,11 +427,12 @@ if __name__ == "__main__":
     # env
     os.environ["NEO_CACHE_PERSISTENT"] = "0"  # disable compiler cache
 
-    csv_file = "out_gridsearch.csv"
-    csv_logger = CSVLogger(csv_file, args.cont)
+    if not dry_run:
+        csv_file = "out_gridsearch.csv"
+        csv_logger = CSVLogger(csv_file, append)
 
     var_set, sample_to_dict = construct_search_space(M, N, K)
-    print(f"Matmul problem size: {sizes}")
+    print(f"Matmul problem size: {M=} {N=} {K=}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
     print(f"{has_bias=}")
@@ -454,7 +448,7 @@ if __name__ == "__main__":
         params = sample_to_dict(sample)
         if not check_constraints(params, verbose=False):
             continue
-        if args.cont and csv_logger.contains(params):
+        if not dry_run and append and csv_logger.contains(params):
             print("SKIP existing configuration")
             continue
 
