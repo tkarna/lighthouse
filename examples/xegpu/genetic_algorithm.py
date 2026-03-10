@@ -62,7 +62,7 @@ class Population:
 
     def sort(self):
         scores = np.array(self.fitness_scores)
-        i_sorted = np.argsort(scores)
+        i_sorted = np.argsort(scores)[::-1]
         self.individuals = [self.individuals[i] for i in i_sorted]
         self.fitness_scores = [self.fitness_scores[i] for i in i_sorted]
 
@@ -170,12 +170,10 @@ class GeneticAlgorithm:
         # select parents probabilistically based on fitness
         nb_parents = int(self.population.size() * self.fertility_rate)
         scores = np.array(self.population.fitness_scores)
-        # give inf cases low probability
-        default = np.sum(scores[~np.isinf(scores)])
-        scores[np.isinf(scores)] = default
-        # convert cost to fitness (higher is better)
-        fitness_probs = 1.0 / (scores + 1e-8)
-        fitness_probs /= np.sum(fitness_probs)
+        # convert scores to probability
+        default = scores.min() / 20
+        scores[scores == 0] = default
+        fitness_probs = scores / np.sum(scores)
         allow_duplicates = True
         parent_indices = np.random.choice(
             len(self.population.individuals),
@@ -200,15 +198,13 @@ class GeneticAlgorithm:
             self.fitness_history.append(self.population.fitness_scores.copy())
             self.next_generation()
             if verbose:
+                best_individual = self.population.individuals[0]
+                best_fitness = self.population.fitness_scores[0]
                 scores = np.array(self.population.fitness_scores)
-                i_sorted = np.argsort(scores)
-                best_individual = self.population.individuals[i_sorted[0]]
-                best_fitness = self.population.fitness_scores[i_sorted[0]]
-                valid_scores = scores[np.isfinite(scores)]
-                avg_fitness = np.mean(valid_scores)
+                avg_fitness = scores[scores > 0].mean()
                 print(
                     f"Generation {self.population.generation:4d}: "
-                    f" best: {best_fitness:.6f}, avg: {avg_fitness:.6f},"
+                    f" best: {best_fitness:.2f}, avg: {avg_fitness:.2f},"
                     f" best config: {best_individual}"
                 )
         toc = time.perf_counter()

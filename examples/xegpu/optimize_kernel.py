@@ -166,9 +166,10 @@ def optimize_kernel(
         csv_file = "out_genetic_algorithm.csv"
         csv_logger = CSVLogger(csv_file)
 
-    gflops_cache = {}
     global nb_new_evaluations
     nb_new_evaluations = 0
+
+    perf_cache = {}
 
     @cache
     def evaluate_fitness(*parameters) -> float:
@@ -194,8 +195,8 @@ def optimize_kernel(
                 has_relu=has_relu,
                 accumulate_c=accumulate_c,
             )
-            gflops_cache[tuple(parameters)] = gflops
-            return elapsed if elapsed != 0.0 else float("inf")
+            perf_cache[tuple(parameters)] = elapsed, gflops
+            return gflops
 
     pop = init_random_population(npop, var_set)
     ga_optimizer = GeneticAlgorithm(
@@ -213,8 +214,8 @@ def optimize_kernel(
     pop.sort()
 
     print("Best configurations found:")
-    for params, time in zip(pop.individuals, pop.fitness_scores):
-        gflops = gflops_cache.get(tuple(params), 0.0)
+    for params in pop.individuals:
+        time, gflops = perf_cache.get(tuple(params), (0.0, 0.0))
         print(f" Time: {time:.2f} us, GFLOPS: {gflops:.2f}: {params}")
     print(f"\nNumber of cost function evaluations: {nb_new_evaluations}")
     print(f"Number of constraint checks: {check_constraints.call_count}")
