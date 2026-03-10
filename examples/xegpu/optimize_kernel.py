@@ -5,6 +5,7 @@ Genetic algorithm-based optimization of kernel parameters.
 import argparse
 from functools import cache
 import sys
+from typing import Optional
 import numpy as np
 from gridsearch_matmul import (
     get_divisors,
@@ -21,6 +22,7 @@ from genetic_algorithm import (
 from gridsearch_matmul import execute_kernel
 from gridsearch_matmul import CSVLogger
 
+# count the number of executed kernels
 nb_new_evaluations = 0
 
 
@@ -29,14 +31,15 @@ def optimize_kernel(
     has_bias: bool,
     has_relu: bool,
     accumulate_c: bool,
-    ab_type: str,
-    c_type: str,
+    ab_type: str = "f16",
+    c_type: str = "f32",
     dry_run: bool = False,
     check_result: bool = True,
+    random_seed: Optional[int] = None,
 ):
-    # set random seed for reproducibility
-    seed = 2
-    np.random.seed(seed)
+    if random_seed:
+        # set random seed for reproducibility
+        np.random.seed(random_seed)
 
     M, N, K = sizes
     timeout = 50
@@ -256,9 +259,6 @@ def parse_cli():
 
 if __name__ == "__main__":
     args = parse_cli()
-
-    ab_type = "f16"
-    c_type = "f32"
     check_result = True
 
     # do not execute kernels, look up timings from experiment data
@@ -269,8 +269,7 @@ if __name__ == "__main__":
         args.bias,
         args.relu,
         not args.no_accumulate_c,
-        ab_type,
-        c_type,
         dry_run=dry_run,
         check_result=check_result,
+        random_seed=2,
     )
