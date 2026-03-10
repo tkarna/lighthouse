@@ -48,7 +48,7 @@ def run_experiment(
             nwarmup=nwarmup,
             schedule_parameters=params,
             check_correctness=check_result,
-            verbose=1,
+            verbose=0,
         )
 
     times *= 1e6  # convert to microseconds
@@ -85,7 +85,7 @@ def check_constraints(params, verbose=False):
     pfetch_max_cols = 32
 
     # heuristics: skip likely suboptimal configurations
-    min_nb_threads = 8
+    min_nb_threads = 16
 
     M = params["M"]
     N = params["N"]
@@ -353,6 +353,7 @@ if __name__ == "__main__":
     sizes = [4096, 4096, 4096]
     has_bias = False
     has_relu = False
+    accumulate_c = True
     M, N, K = sizes
     ab_type = "f16"
     c_type = "f32"
@@ -361,13 +362,10 @@ if __name__ == "__main__":
     dump_kernel = False
     nwarmup = 300
     nruns = 500
-    dpas_tile = [8, 16, 16]
+    timeout = 60
 
     # hardware constraints
-    max_nb_sg_threads = 32
-
-    # heuristics
-    small_load_tile_elems = 16 * 16  # skip smaller load tiles
+    dpas_tile = [8, 16, 16]
 
     # env
     os.environ["NEO_CACHE_PERSISTENT"] = "0"  # disable compiler cache
@@ -375,11 +373,16 @@ if __name__ == "__main__":
     csv_file = "out_gridsearch.csv"
     csv_logger = CSVLogger(csv_file, args.cont)
 
-    wg_tiles_m = divisible_by(get_divisors(M, 64, 256), dpas_tile[0])
-    wg_tiles_n = divisible_by(get_divisors(N, 64, 256), dpas_tile[1])
-    sg_tiles_m = divisible_by(get_divisors(M, 32, 128), dpas_tile[0])
-    sg_tiles_n = divisible_by(get_divisors(N, 32, 128), dpas_tile[1])
-    k_tiles = divisible_by(get_divisors(K, 16, 50), dpas_tile[2])
+    wg_tile_lim_m = min(max(M // 4, 16), 64), min(M, 256)
+    wg_tile_lim_n = min(max(N // 4, 16), 64), min(N, 256)
+    sg_tile_lim_m = min(max(M // 8, 16), 32), min(M, 128)
+    sg_tile_lim_n = min(max(N // 8, 16), 32), min(N, 128)
+
+    wg_tiles_m = divisible_by(get_divisors(M, *wg_tile_lim_m), dpas_tile[0])
+    wg_tiles_n = divisible_by(get_divisors(N, *wg_tile_lim_n), dpas_tile[1])
+    sg_tiles_m = divisible_by(get_divisors(M, *sg_tile_lim_m), dpas_tile[0])
+    sg_tiles_n = divisible_by(get_divisors(N, *sg_tile_lim_n), dpas_tile[1])
+    k_tiles = divisible_by(get_divisors(K, 16, min(K, 256)), dpas_tile[2])
     load_tiles = [8, 16, 32]
     prefetches = [1]
 
@@ -388,6 +391,7 @@ if __name__ == "__main__":
     print(f"{c_type=}")
     print(f"{has_bias=}")
     print(f"{has_relu=}")
+    print(f"{accumulate_c=}")
 
     print(f"{wg_tiles_m=}")
     print(f"{wg_tiles_n=}")
@@ -469,10 +473,12 @@ if __name__ == "__main__":
             nwarmup,
             check_result,
             params,
-            ab_type,
-            c_type,
-            has_bias,
-            has_relu,
+            timeout=timeout,
+            ab_type=ab_type,
+            c_type=c_type,
+            has_bias=has_bias,
+            has_relu=has_relu,
+            accumulate_c=accumulate_c,
         )
 
     duration = perf_counter() - tic
