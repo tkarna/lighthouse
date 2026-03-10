@@ -5,19 +5,24 @@ Genetic algorithm-based optimization of kernel parameters.
 import csv
 import numpy as np
 import time
+from types import FunctionType
 
 
 class Variable:
+    """Represents a single tunable parameter with list of valid choices."""
+
     def __init__(self, name: str, choices: list):
         self.name = name
         self.choices = choices
 
-    def random_sample(self):
+    def random_sample(self) -> int:
         return int(np.random.choice(self.choices))
 
 
 class VariableSet:
-    def __init__(self, variables: list[Variable], is_valid_fn=None):
+    """A tunable variable set forming the search space."""
+
+    def __init__(self, variables: list[Variable], is_valid_fn: FunctionType = None):
         self.variables = variables
         self.is_valid_fn = is_valid_fn
 
@@ -41,7 +46,9 @@ class VariableSet:
 
 
 class Population:
-    def __init__(self, size: int, variable_set: VariableSet, individuals: list = None):
+    """A population of individuals drawn from the variable set."""
+
+    def __init__(self, variable_set: VariableSet, individuals: list = None):
         self.variable_set = variable_set
         self.individuals = individuals if individuals is not None else []
         self.fitness_scores = []
@@ -87,7 +94,7 @@ class Population:
 
 
 def init_random_population(pop_size: int, variable_set: VariableSet) -> Population:
-    population = Population(size=pop_size, variable_set=variable_set)
+    population = Population(variable_set=variable_set)
     population.individuals = []
     i = 0
     while len(population.individuals) < pop_size:
@@ -109,7 +116,7 @@ class GeneticAlgorithm:
         recombination_rate: float = 0.5,
         mutation_rate: float = 0.001,
         fertility_rate: float = 1.0,
-        evaluate_fitness=None,
+        evaluate_fitness: FunctionType = None,
     ):
         self.fixed_population_size = population.size()
         self.population = population
@@ -121,7 +128,7 @@ class GeneticAlgorithm:
         self.population_history = []
         self.fitness_history = []
 
-    def recombine_and_mutate(self, individuals) -> list:
+    def recombine_and_mutate(self, individuals: list) -> list:
         variable_set = self.population.variable_set
         # every individual gets an update from another donor
         new_individuals = []
@@ -159,7 +166,7 @@ class GeneticAlgorithm:
             ]
             self.population.sort()
 
-    def next_generation(self) -> Population:
+    def next_generation(self):
         # select parents probabilistically based on fitness
         nb_parents = int(self.population.size() * self.fertility_rate)
         scores = np.array(self.population.fitness_scores)
@@ -170,13 +177,11 @@ class GeneticAlgorithm:
         fitness_probs = 1.0 / (scores + 1e-8)
         fitness_probs /= np.sum(fitness_probs)
         allow_duplicates = True
-        parent_indices = int(
-            np.random.choice(
-                len(self.population.individuals),
-                size=nb_parents,
-                replace=allow_duplicates,
-                p=fitness_probs,
-            )
+        parent_indices = np.random.choice(
+            len(self.population.individuals),
+            size=nb_parents,
+            replace=allow_duplicates,
+            p=fitness_probs,
         )
         parents = [self.population.individuals[i] for i in parent_indices]
         # get new set of individuals and extend population
