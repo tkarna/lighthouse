@@ -27,7 +27,7 @@ class VariableSet:
         self.variables = variables
         self.is_valid_fn = is_valid_fn
 
-    def random_sample(self):
+    def random_sample(self) -> list:
         return [var.random_sample() for var in self.variables]
 
     def names(self) -> list[str]:
@@ -43,11 +43,11 @@ class VariableSet:
     def is_valid(self, sample: list) -> bool:
         return self.is_valid_fn(self.sample_to_dict(sample))
 
-    def sample_to_dict(self, sample):
+    def sample_to_dict(self, sample: list) -> dict:
         assert len(sample) == len(self.variables)
         return dict(zip(self.names(), sample))
 
-    def iterables(self):
+    def iterables(self) -> list:
         return [v.choices for v in self.variables]
 
     def print(self):

@@ -22,16 +22,16 @@ from genetic_algorithm import (
 
 
 def run_experiment(
-    ab_type="f16",
-    c_type="f32",
-    nruns=None,
-    nwarmup=None,
-    check_result=False,
-    has_bias=False,
-    has_relu=False,
-    accumulate_c=True,
+    ab_type: str = "f16",
+    c_type: str = "f32",
+    nruns: int = None,
+    nwarmup: int = None,
+    check_result: bool = False,
+    has_bias: bool = False,
+    has_relu: bool = False,
+    accumulate_c: bool = True,
     **params,
-):
+) -> tuple[float, float]:
     M = params.pop("M")
     N = params.pop("N")
     K = params.pop("K")
@@ -81,7 +81,7 @@ def run_experiment(
     return elapsed, gflops
 
 
-def run_with_timeout(*args, timeout=20, **kwargs):
+def run_with_timeout(*args, timeout: int = 20, **kwargs) -> tuple[float, float]:
     """
     Wrapper to execute the experiment with a new thread and a timeout.
 
@@ -112,18 +112,18 @@ def run_with_timeout(*args, timeout=20, **kwargs):
 
 
 def execute_and_log(
-    csv_logger,
-    nruns,
-    nwarmup,
-    check_result,
-    params,
-    ab_type,
-    c_type,
-    has_bias,
-    has_relu,
-    accumulate_c,
-    timeout=20,
-):
+    csv_logger: CSVLogger,
+    nruns: int,
+    nwarmup: int,
+    check_result: bool,
+    params: dict,
+    ab_type: str,
+    c_type: str,
+    has_bias: bool,
+    has_relu: bool,
+    accumulate_c: bool,
+    timeout: int = 20,
+) -> tuple[float, float]:
     try:
         tic = perf_counter()
         entry = params.copy()
@@ -163,7 +163,7 @@ def counted(func):
 
 
 @counted
-def check_constraints(params, verbose=False):
+def check_constraints(params: dict, verbose: bool = False) -> bool:
     def print_reason(msg):
         if verbose:
             print(f"  Invalid: {msg}")
@@ -332,7 +332,7 @@ def check_constraints(params, verbose=False):
     return True
 
 
-def get_divisors(n, min_tile=32, max_tile=256):
+def get_divisors(n: int, min_tile: int = 32, max_tile: int = 256) -> list[int]:
     p = numpy.ceil(n / max_tile)
     q = n // min_tile
     candidates = n / numpy.arange(max(p, 1), q + 1)
@@ -340,11 +340,11 @@ def get_divisors(n, min_tile=32, max_tile=256):
     return candidates[::-1]
 
 
-def divisible_by(a_list, b):
+def divisible_by(a_list: list, b: int) -> list:
     return [a for a in a_list if a % b == 0]
 
 
-def construct_search_space(M, N, K):
+def construct_search_space(M: int, N: int, K: int):
     wg_tile_lim_m = min(max(M // 4, 16), 64), min(M, 256)
     wg_tile_lim_n = min(max(N // 4, 16), 64), min(N, 256)
     sg_tile_lim_m = min(max(M // 8, 16), 32), min(M, 128)
