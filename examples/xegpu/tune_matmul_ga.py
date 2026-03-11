@@ -26,26 +26,23 @@ def optimize_kernel(
     ab_type: str = "f16",
     c_type: str = "f32",
     check_result: bool = True,
+    npopulation: int = 14,
+    ngenerations: int = 30,
+    mutation_rate: float = 0.001,
     random_seed: Optional[int] = None,
 ):
     if random_seed:
         # set random seed for reproducibility
         random.seed(random_seed)
 
-    M, N, K = sizes
+    # timeout for kernel execution in seconds
     timeout = 50
 
+    # number of iterations in kernel timing is chosen adaptively
     nwarmup = None
     nruns = None
 
-    # genetic algorithm parameters
-    npop = 14
-    ngenerations = 30
-    recombination_rate = 0.5
-    mutation_rate = 0.001
-    fertility_rate = 1.0
-
-    var_set, sample_to_dict = construct_search_space(M, N, K)
+    var_set, sample_to_dict = construct_search_space(*sizes)
     print(f"Matmul problem size: {sizes}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
@@ -77,12 +74,10 @@ def optimize_kernel(
         )
         return gflops
 
-    pop = init_random_population(npop, var_set)
+    pop = init_random_population(npopulation, var_set)
     ga_optimizer = GeneticAlgorithm(
         population=pop,
-        recombination_rate=recombination_rate,
         mutation_rate=mutation_rate,
-        fertility_rate=fertility_rate,
         evaluate_fitness=evaluate_fitness,
     )
 
@@ -101,6 +96,13 @@ if __name__ == "__main__":
     parser = cli_parser(
         description="Optimize matmul kernel parameters using a genetic algorithm."
     )
+    parser.add_argument(
+        "--generations",
+        type=int,
+        default=30,
+        help="Number of generations for the genetic algorithm.",
+    )
+
     args = parser.parse_args()
 
     optimize_kernel(
@@ -109,5 +111,6 @@ if __name__ == "__main__":
         args.relu,
         not args.no_accumulate_c,
         check_result=args.check_result,
+        ngenerations=args.generations,
         random_seed=2,
     )
