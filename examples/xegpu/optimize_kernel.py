@@ -5,7 +5,6 @@ Genetic algorithm-based optimization of kernel parameters.
 from functools import cache
 import sys
 from typing import Optional
-import numpy as np
 import random
 from matmul import cli_parser
 from gridsearch_matmul import (
@@ -15,7 +14,6 @@ from gridsearch_matmul import (
 from genetic_algorithm import (
     init_random_population,
     GeneticAlgorithm,
-    load_experiment_data,
 )
 from gridsearch_matmul import execute_and_log
 from csv_logger import CSVLogger
@@ -31,7 +29,6 @@ def optimize_kernel(
     accumulate_c: bool,
     ab_type: str = "f16",
     c_type: str = "f32",
-    dry_run: bool = False,
     check_result: bool = True,
     random_seed: Optional[int] = None,
 ):
@@ -64,22 +61,8 @@ def optimize_kernel(
     var_set.print()
     sys.stdout.flush()
 
-    if dry_run:
-        # load experiment data from csv file
-        csv_file = "out_gridsearch.csv"
-        experiment_data = load_experiment_data(
-            csv_file,
-            var_set,
-            cost_param="time (ms)",
-        )
-
-        all_times = np.array(list(experiment_data.values()))
-        best_exp = np.argmin(all_times)
-        print(f"Best recorded time: {all_times[best_exp]:.6f} ms")
-        print(f"Best configuration: {list(list(experiment_data.keys())[best_exp])}")
-    else:
-        csv_file = "out_genetic_algorithm.csv"
-        csv_logger = CSVLogger(csv_file)
+    csv_file = "out_genetic_algorithm.csv"
+    csv_logger = CSVLogger(csv_file)
 
     global nb_new_evaluations
     nb_new_evaluations = 0
@@ -90,28 +73,21 @@ def optimize_kernel(
     def evaluate_fitness(*parameters) -> float:
         global nb_new_evaluations
         nb_new_evaluations += 1
-        if dry_run:
-            key = tuple(parameters)
-            if key in experiment_data:
-                return experiment_data[key]
-            else:
-                return float("inf")
-        else:
-            elapsed, gflops = execute_and_log(
-                csv_logger,
-                nruns,
-                nwarmup,
-                check_result,
-                sample_to_dict(parameters),
-                timeout=timeout,
-                ab_type=ab_type,
-                c_type=c_type,
-                has_bias=has_bias,
-                has_relu=has_relu,
-                accumulate_c=accumulate_c,
-            )
-            perf_cache[tuple(parameters)] = elapsed, gflops
-            return gflops
+        elapsed, gflops = execute_and_log(
+            csv_logger,
+            nruns,
+            nwarmup,
+            check_result,
+            sample_to_dict(parameters),
+            timeout=timeout,
+            ab_type=ab_type,
+            c_type=c_type,
+            has_bias=has_bias,
+            has_relu=has_relu,
+            accumulate_c=accumulate_c,
+        )
+        perf_cache[tuple(parameters)] = elapsed, gflops
+        return gflops
 
     pop = init_random_population(npop, var_set)
     ga_optimizer = GeneticAlgorithm(
@@ -141,15 +117,11 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # do not execute kernels, look up timings from experiment data
-    dry_run = False
-
     optimize_kernel(
         args.sizes,
         args.bias,
         args.relu,
         not args.no_accumulate_c,
-        dry_run=dry_run,
         check_result=args.check_result,
         random_seed=2,
     )
