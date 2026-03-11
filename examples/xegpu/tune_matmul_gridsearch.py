@@ -153,16 +153,6 @@ def execute_and_log(
     return elapsed, gflops
 
 
-def counted(func):
-    def wrapper(*args, **kwargs):
-        wrapper.call_count += 1
-        return func(*args, **kwargs)
-
-    wrapper.call_count = 0
-    return wrapper
-
-
-@counted
 def check_constraints(params: dict, verbose: bool = False) -> bool:
     def print_reason(msg):
         if verbose:

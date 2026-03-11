@@ -7,19 +7,15 @@ import sys
 from typing import Optional
 import random
 from matmul import cli_parser
-from gridsearch_matmul import (
-    check_constraints,
+from tune_matmul_gridsearch import (
     construct_search_space,
+    execute_and_log,
 )
 from genetic_algorithm import (
     init_random_population,
     GeneticAlgorithm,
 )
-from gridsearch_matmul import execute_and_log
 from csv_logger import CSVLogger
-
-# count the number of executed kernels
-nb_new_evaluations = 0
 
 
 def optimize_kernel(
@@ -64,15 +60,8 @@ def optimize_kernel(
     csv_file = "out_genetic_algorithm.csv"
     csv_logger = CSVLogger(csv_file)
 
-    global nb_new_evaluations
-    nb_new_evaluations = 0
-
-    perf_cache = {}
-
     @cache
     def evaluate_fitness(*parameters) -> float:
-        global nb_new_evaluations
-        nb_new_evaluations += 1
         elapsed, gflops = execute_and_log(
             csv_logger,
             nruns,
@@ -86,7 +75,6 @@ def optimize_kernel(
             has_relu=has_relu,
             accumulate_c=accumulate_c,
         )
-        perf_cache[tuple(parameters)] = elapsed, gflops
         return gflops
 
     pop = init_random_population(npop, var_set)
@@ -100,15 +88,13 @@ def optimize_kernel(
 
     ga_optimizer.initialize()
     pop.print()
-
     ga_optimizer.optimize(ngen=ngenerations, verbose=1)
 
+    nb_kernel_evals = evaluate_fitness.cache_info().currsize
     print("Best configurations found:")
-    for params in pop.individuals:
-        time, gflops = perf_cache.get(tuple(params), (0.0, 0.0))
-        print(f" Time: {time:.2f} us, GFLOPS: {gflops:.2f}: {params}")
-    print(f"Number of constraint checks: {check_constraints.call_count}")
-    print(f"\nNumber of kernel evaluations: {nb_new_evaluations}")
+    for params, gflops in zip(pop.individuals, pop.fitness_scores):
+        print(f" GFLOPS: {gflops:.2f}: {params}")
+    print(f"Number of kernel evaluations: {nb_kernel_evals}")
 
 
 if __name__ == "__main__":
