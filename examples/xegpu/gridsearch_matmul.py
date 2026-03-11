@@ -396,13 +396,6 @@ if __name__ == "__main__":
         description="Optimize matmul kernel parameters using a exhaustive search."
     )
     parser.add_argument(
-        "--continue",
-        "-c",
-        dest="cont",
-        action="store_true",
-        help="Skip configurations already existing in the CSV log file.",
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Check validity of combinations but do not execute kernels.",
@@ -417,7 +410,6 @@ if __name__ == "__main__":
     c_type = "f32"
     verbose = True
     check_result = args.check_result
-    append = args.cont
     dry_run = args.dry_run
 
     nwarmup = None
@@ -429,7 +421,7 @@ if __name__ == "__main__":
 
     if not dry_run:
         csv_file = "out_gridsearch.csv"
-        csv_logger = CSVLogger(csv_file, append)
+        csv_logger = CSVLogger(csv_file)
 
     var_set, sample_to_dict = construct_search_space(M, N, K)
     print(f"Matmul problem size: {M=} {N=} {K=}")
@@ -447,9 +439,6 @@ if __name__ == "__main__":
     for sample in product(*var_set.iterables()):
         params = sample_to_dict(sample)
         if not check_constraints(params, verbose=False):
-            continue
-        if not dry_run and append and csv_logger.contains(params):
-            print("SKIP existing configuration")
             continue
 
         i += 1

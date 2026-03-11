@@ -4,7 +4,7 @@ import os
 
 
 class CSVLogger:
-    def __init__(self, filename=None, append=False):
+    def __init__(self, filename: str = None):
         self.filename = filename
         self.header_written = False
         self.fieldnames = None
@@ -14,13 +14,10 @@ class CSVLogger:
         handler.setFormatter(logging.Formatter("%(message)s"))
         if not self.logger.hasHandlers():
             self.logger.addHandler(handler)
-        if self.filename is not None and not append:
+        if self.filename is not None:
             assert not os.path.exists(self.filename), (
                 f"CSV file '{self.filename}' already exists"
             )
-        self.loaded = self._load() if append else None
-        if self.loaded:
-            print(f"Loaded {len(self.loaded) if self.loaded else 0} existing entries")
 
     def log(self, data: dict):
         if self.fieldnames is None:
@@ -37,22 +34,3 @@ class CSVLogger:
                 writer.writeheader()
                 self.header_written = True
             writer.writerow(data)
-
-    def _load(self):
-        # load existing CSV file as one string per row
-        with open(self.filename, mode="r") as csvfile:
-            # strip lines and create dict
-            data = [line.strip() for line in csvfile.readlines()]
-        fieldnames = data[0].split(",")
-        data = {tuple(line.split(",")): 1 for line in data[1:]}
-        data = {",".join(d[:-2]): 1 for d in data}
-        if self.fieldnames is None:
-            self.fieldnames = list(fieldnames)
-        return data
-
-    def contains(self, entry: dict):
-        if not self.loaded:
-            raise RuntimeError("No data loaded. Call _load() first.")
-        # check if data (except last two elements) is in existing CSV file
-        key = ",".join(str(entry[k]) for k in self.fieldnames)
-        return key in self.loaded
