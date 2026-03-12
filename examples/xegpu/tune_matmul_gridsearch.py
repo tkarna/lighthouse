@@ -401,6 +401,11 @@ if __name__ == "__main__":
         help="Check validity of combinations but do not execute kernels.",
     )
     parser.add_argument(
+        "--no-check-result",
+        action="store_true",
+        help="Skip correctness check.",
+    )
+    parser.add_argument(
         "--dump-json",
         dest="n_dump_json",
         type=int,
@@ -456,7 +461,7 @@ if __name__ == "__main__":
             nruns,
             nwarmup,
             params,
-            check_result=True,
+            check_result=not args.no_check_result,
             timeout=timeout,
             ab_type=ab_type,
             c_type=c_type,

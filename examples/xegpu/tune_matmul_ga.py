@@ -124,6 +124,11 @@ if __name__ == "__main__":
         default=0,
         help="Dump the best n configurations as JSON files.",
     )
+    parser.add_argument(
+        "--no-check-result",
+        action="store_true",
+        help="Skip correctness check.",
+    )
 
     args = parser.parse_args()
 
@@ -132,7 +137,7 @@ if __name__ == "__main__":
         args.bias,
         args.relu,
         not args.no_accumulate_c,
-        check_result=True,
+        check_result=not args.no_check_result,
         ngenerations=args.generations,
         dump_json=args.n_dump_json,
         random_seed=2,
