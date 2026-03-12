@@ -141,7 +141,7 @@ def execute_and_log(
         )
         duration = perf_counter() - tic
         entry = params.copy()
-        entry["time (ms)"] = elapsed
+        entry["time (us)"] = elapsed
         entry["GFLOPS/s"] = gflops
         csv_logger.log(entry)
         duration_str = f"Duration: {duration:.3f} s"
