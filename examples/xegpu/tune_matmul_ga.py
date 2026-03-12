@@ -5,6 +5,7 @@ Genetic algorithm-based optimization of kernel parameters.
 from functools import cache
 import sys
 import os
+import json
 from typing import Optional
 import random
 from matmul import cli_parser
@@ -30,6 +31,7 @@ def optimize_kernel(
     npopulation: int = 14,
     ngenerations: int = 30,
     mutation_rate: float = 0.001,
+    dump_json: int = 0,
     random_seed: Optional[int] = None,
 ):
     if random_seed:
@@ -93,6 +95,14 @@ def optimize_kernel(
         print(f" GFLOPS: {gflops:.2f}: {params}")
     print(f"Number of kernel evaluations: {nb_kernel_evals}")
 
+    if dump_json > 0:
+        print("")
+        for i in range(min(dump_json, len(pop.individuals))):
+            filename = f"matmul_params_{i:02d}.json"
+            with open(filename, "w") as f:
+                json.dump(sample_to_dict(pop.individuals[i]), f, indent=4)
+            print(f"Saved config to {filename}")
+
 
 if __name__ == "__main__":
     parser = cli_parser(
@@ -104,6 +114,13 @@ if __name__ == "__main__":
         default=30,
         help="Number of generations for the genetic algorithm.",
     )
+    parser.add_argument(
+        "--dump-json",
+        dest="n_dump_json",
+        type=int,
+        default=0,
+        help="Dump the best n configurations as JSON files.",
+    )
 
     args = parser.parse_args()
 
@@ -114,5 +131,6 @@ if __name__ == "__main__":
         not args.no_accumulate_c,
         check_result=True,
         ngenerations=args.generations,
+        dump_json=args.n_dump_json,
         random_seed=2,
     )
