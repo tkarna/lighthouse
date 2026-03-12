@@ -382,10 +382,10 @@ def construct_search_space(M: int, N: int, K: int):
     return var_set, sample_to_dict
 
 
-def dump_configs_json(param_list: list[dict]):
+def dump_configs_json(param_list: list[dict], filename_prefix: str = "matmul_params"):
     print("\nSaving parameters:")
     for i, params in enumerate(param_list):
-        filename = f"matmul_params_{i:02d}.json"
+        filename = f"{filename_prefix}_{i:02d}.json"
         with open(filename, "w") as f:
             json.dump(params, f, indent=4)
         print(f"  {filename}")
@@ -409,6 +409,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    sizes = args.sizes
     has_bias = args.bias
     has_relu = args.relu
     accumulate_c = not args.no_accumulate_c
@@ -429,8 +430,8 @@ if __name__ == "__main__":
         csv_file = "out_gridsearch.csv"
         csv_logger = CSVLogger(csv_file)
 
-    var_set, sample_to_dict = construct_search_space(*args.sizes)
-    print(f"Matmul problem size: {args.sizes}")
+    var_set, sample_to_dict = construct_search_space(*sizes)
+    print(f"Matmul problem size: {sizes}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
     print(f"{has_bias=}")
@@ -475,4 +476,11 @@ if __name__ == "__main__":
         print("Best configurations found:")
         for gflops, params in best_configs:
             print(f" GFLOPS: {gflops:.2f}: {params}")
+        sizes_str = "-".join(str(s) for s in sizes)
+        relu_str = "_relu" if has_relu else ""
+        bias_str = "_bias" if has_bias else ""
+        acc_str = "_acc" if accumulate_c else ""
+        prefix = (
+            f"matmul_params_{sizes_str}_{ab_type}-{c_type}{bias_str}{relu_str}{acc_str}"
+        )
         dump_configs_json([params for _, params in best_configs])

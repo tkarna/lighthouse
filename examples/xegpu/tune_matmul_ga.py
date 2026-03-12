@@ -97,7 +97,14 @@ def optimize_kernel(
 
     if dump_json > 0:
         configs = [sample_to_dict(p) for p in pop.individuals[:dump_json]]
-        dump_configs_json(configs)
+        sizes_str = "-".join(str(s) for s in sizes)
+        relu_str = "_relu" if has_relu else ""
+        bias_str = "_bias" if has_bias else ""
+        acc_str = "_acc" if accumulate_c else ""
+        prefix = (
+            f"matmul_params_{sizes_str}_{ab_type}-{c_type}{bias_str}{relu_str}{acc_str}"
+        )
+        dump_configs_json(configs, filename_prefix=prefix)
 
 
 if __name__ == "__main__":
