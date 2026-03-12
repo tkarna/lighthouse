@@ -7,6 +7,7 @@ from itertools import product
 import numpy as np
 import os
 import sys
+import json
 from csv_logger import CSVLogger
 
 from mlir import ir
@@ -381,6 +382,15 @@ def construct_search_space(M: int, N: int, K: int):
     return var_set, sample_to_dict
 
 
+def dump_configs_json(param_list: list[dict]):
+    print("\nSaving parameters:")
+    for i, params in enumerate(param_list):
+        filename = f"matmul_params_{i:02d}.json"
+        with open(filename, "w") as f:
+            json.dump(params, f, indent=4)
+        print(f"  {filename}")
+
+
 if __name__ == "__main__":
     parser = cli_parser(
         description="Optimize matmul kernel parameters using a exhaustive search."
@@ -389,6 +399,13 @@ if __name__ == "__main__":
         "--dry-run",
         action="store_true",
         help="Check validity of combinations but do not execute kernels.",
+    )
+    parser.add_argument(
+        "--dump-json",
+        dest="n_dump_json",
+        type=int,
+        default=0,
+        help="Dump the best n configurations as JSON files.",
     )
     args = parser.parse_args()
 
@@ -423,6 +440,7 @@ if __name__ == "__main__":
     sys.stdout.flush()
 
     i = 0
+    executed_configs = []
     tic = perf_counter()
     for sample in product(*var_set.iterables()):
         params = sample_to_dict(sample)
@@ -432,7 +450,7 @@ if __name__ == "__main__":
         i += 1
         if args.dry_run:
             continue
-        execute_and_log(
+        time, gflops = execute_and_log(
             csv_logger,
             nruns,
             nwarmup,
@@ -445,7 +463,16 @@ if __name__ == "__main__":
             has_relu=has_relu,
             accumulate_c=accumulate_c,
         )
+        executed_configs.append((gflops, params))
 
     duration = perf_counter() - tic
     print(f"Number of executed configurations: {i}")
     print(f"Total duration: {timedelta(seconds=duration)}")
+
+    if args.n_dump_json > 0:
+        executed_configs.sort(key=lambda x: x[0], reverse=True)
+        best_configs = [c for c in executed_configs[: args.n_dump_json]]
+        print("Best configurations found:")
+        for gflops, params in best_configs:
+            print(f" GFLOPS: {gflops:.2f}: {params}")
+        dump_configs_json([params for _, params in best_configs])

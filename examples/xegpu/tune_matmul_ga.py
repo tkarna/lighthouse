@@ -5,13 +5,13 @@ Genetic algorithm-based optimization of kernel parameters.
 from functools import cache
 import sys
 import os
-import json
 from typing import Optional
 import random
 from matmul import cli_parser
 from tune_matmul_gridsearch import (
     construct_search_space,
     execute_and_log,
+    dump_configs_json,
 )
 from genetic_algorithm import (
     init_random_population,
@@ -96,12 +96,8 @@ def optimize_kernel(
     print(f"Number of kernel evaluations: {nb_kernel_evals}")
 
     if dump_json > 0:
-        print("")
-        for i in range(min(dump_json, len(pop.individuals))):
-            filename = f"matmul_params_{i:02d}.json"
-            with open(filename, "w") as f:
-                json.dump(sample_to_dict(pop.individuals[i]), f, indent=4)
-            print(f"Saved config to {filename}")
+        configs = [sample_to_dict(p) for p in pop.individuals[:dump_json]]
+        dump_configs_json(configs)
 
 
 if __name__ == "__main__":
