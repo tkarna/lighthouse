@@ -10,6 +10,7 @@ XeGPU matrix multiplication benchmark.
 
 import argparse
 import ctypes
+import json
 from typing import Optional
 from functools import cached_property
 
@@ -331,6 +332,10 @@ def parse_cli_args():
         action="store_true",
         help="Dump transform schedule.",
     )
+    parser.add_argument(
+        "--json",
+        help="Read problem sizes and tile parameters from a JSON file.",
+    )
     args = parser.parse_args()
 
     return args
@@ -339,26 +344,33 @@ def parse_cli_args():
 if __name__ == "__main__":
     args = parse_cli_args()
 
-    params = {
-        "wg_m": args.wg_tile[0],
-        "wg_n": args.wg_tile[1],
-        "sg_m": args.sg_tile[0],
-        "sg_n": args.sg_tile[1],
-        "k": args.k_tile,
-        "load_a_m": args.load_tile_a[0],
-        "load_a_k": args.load_tile_a[1],
-        "load_b_k": args.load_tile_b[0],
-        "load_b_n": args.load_tile_b[1],
-        "pf_a_m": args.prefetch_tile_a[0],
-        "pf_a_k": args.prefetch_tile_a[1],
-        "pf_b_k": args.prefetch_tile_b[0],
-        "pf_b_n": args.prefetch_tile_b[1],
-        "pf_nb": args.nb_prefetch,
-    }
-
-    M, N, K = args.sizes
     ab_type = "f16"
     c_type = "f32"
+
+    if args.json:
+        with open(args.json, "r") as f:
+            params = json.load(f)
+        M = params.pop("M")
+        N = params.pop("N")
+        K = params.pop("K")
+    else:
+        M, N, K = args.sizes
+        params = {
+            "wg_m": args.wg_tile[0],
+            "wg_n": args.wg_tile[1],
+            "sg_m": args.sg_tile[0],
+            "sg_n": args.sg_tile[1],
+            "k": args.k_tile,
+            "load_a_m": args.load_tile_a[0],
+            "load_a_k": args.load_tile_a[1],
+            "load_b_k": args.load_tile_b[0],
+            "load_b_n": args.load_tile_b[1],
+            "pf_a_m": args.prefetch_tile_a[0],
+            "pf_a_k": args.prefetch_tile_a[1],
+            "pf_b_k": args.prefetch_tile_b[0],
+            "pf_b_n": args.prefetch_tile_b[1],
+            "pf_nb": args.nb_prefetch,
+        }
 
     with ir.Context(), ir.Location.unknown():
         wload = XeGPUMatMul(
