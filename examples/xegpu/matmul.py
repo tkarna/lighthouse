@@ -235,11 +235,6 @@ def cli_parser(description="Matrix Multiplication using MLIR"):
         action="store_true",
         help="Compute plain matrix-multiply C=A*B instead of matrix-multiply-accumulate C+=A*B.",
     )
-    parser.add_argument(
-        "--check-result",
-        action="store_true",
-        help="Check the result of the matrix multiplication.",
-    )
     return parser
 
 
@@ -298,6 +293,11 @@ def parse_cli_args():
         type=int,
         default=1,
         help="Number of initial prefetches.",
+    )
+    parser.add_argument(
+        "--check-result",
+        action="store_true",
+        help="Check the result of the matrix multiplication.",
     )
     parser.add_argument(
         "--nruns",

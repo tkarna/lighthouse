@@ -115,18 +115,17 @@ def execute_and_log(
     csv_logger: CSVLogger,
     nruns: int,
     nwarmup: int,
-    check_result: bool,
     params: dict,
-    ab_type: str,
-    c_type: str,
-    has_bias: bool,
-    has_relu: bool,
-    accumulate_c: bool,
+    check_result: bool = True,
+    ab_type: str = "f16",
+    c_type: str = "f32",
+    has_bias: bool = False,
+    has_relu: bool = False,
+    accumulate_c: bool = True,
     timeout: int = 20,
 ) -> tuple[float, float]:
     try:
         tic = perf_counter()
-        entry = params.copy()
         elapsed, gflops = run_with_timeout(
             ab_type=ab_type,
             c_type=c_type,
@@ -140,10 +139,11 @@ def execute_and_log(
             **params,
         )
         duration = perf_counter() - tic
+        entry = params.copy()
         entry["time (ms)"] = elapsed
         entry["GFLOPS/s"] = gflops
         csv_logger.log(entry)
-        duration_str = f"Duration: {duration:.3f} s GFLOP/s: {gflops:.2f}"
+        duration_str = f"Duration: {duration:.3f} s"
         print(duration_str)
     except Exception as e:
         print("FAILED")
@@ -392,37 +392,35 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    M, N, K = args.sizes
     has_bias = args.bias
     has_relu = args.relu
     accumulate_c = not args.no_accumulate_c
     ab_type = "f16"
     c_type = "f32"
-    verbose = True
-    check_result = args.check_result
-    dry_run = args.dry_run
 
+    # timeout for kernel execution in seconds
+    timeout = 50
+
+    # number of iterations in kernel timing is chosen adaptively
     nwarmup = None
     nruns = None
-    timeout = 60
 
-    # env
-    os.environ["NEO_CACHE_PERSISTENT"] = "0"  # disable compiler cache
+    # disable IGC compiler cache
+    os.environ["NEO_CACHE_PERSISTENT"] = "0"
 
-    if not dry_run:
+    if not args.dry_run:
         csv_file = "out_gridsearch.csv"
         csv_logger = CSVLogger(csv_file)
 
-    var_set, sample_to_dict = construct_search_space(M, N, K)
-    print(f"Matmul problem size: {M=} {N=} {K=}")
+    var_set, sample_to_dict = construct_search_space(*args.sizes)
+    print(f"Matmul problem size: {args.sizes}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
     print(f"{has_bias=}")
     print(f"{has_relu=}")
     print(f"{accumulate_c=}")
-    print(f"{nwarmup=}")
-    print(f"{nruns=}")
     var_set.print()
+    sys.stdout.flush()
 
     i = 0
     tic = perf_counter()
@@ -432,14 +430,14 @@ if __name__ == "__main__":
             continue
 
         i += 1
-        if dry_run:
+        if args.dry_run:
             continue
         execute_and_log(
             csv_logger,
             nruns,
             nwarmup,
-            check_result,
             params,
+            check_result=True,
             timeout=timeout,
             ab_type=ab_type,
             c_type=c_type,

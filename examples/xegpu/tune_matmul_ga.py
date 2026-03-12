@@ -4,6 +4,7 @@ Genetic algorithm-based optimization of kernel parameters.
 
 from functools import cache
 import sys
+import os
 from typing import Optional
 import random
 from matmul import cli_parser
@@ -42,6 +43,9 @@ def optimize_kernel(
     nwarmup = None
     nruns = None
 
+    # disable IGC compiler cache
+    os.environ["NEO_CACHE_PERSISTENT"] = "0"
+
     var_set, sample_to_dict = construct_search_space(*sizes)
     print(f"Matmul problem size: {sizes}")
     print(f"{ab_type=}")
@@ -49,8 +53,6 @@ def optimize_kernel(
     print(f"{has_bias=}")
     print(f"{has_relu=}")
     print(f"{accumulate_c=}")
-    print(f"{nwarmup=}")
-    print(f"{nruns=}")
     var_set.print()
     sys.stdout.flush()
 
@@ -63,8 +65,8 @@ def optimize_kernel(
             csv_logger,
             nruns,
             nwarmup,
-            check_result,
             sample_to_dict(parameters),
+            check_result,
             timeout=timeout,
             ab_type=ab_type,
             c_type=c_type,
@@ -110,7 +112,7 @@ if __name__ == "__main__":
         args.bias,
         args.relu,
         not args.no_accumulate_c,
-        check_result=args.check_result,
+        check_result=True,
         ngenerations=args.generations,
         random_seed=2,
     )
