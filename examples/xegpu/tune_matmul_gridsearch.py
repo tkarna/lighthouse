@@ -4,7 +4,7 @@ from multiprocessing.sharedctypes import Value
 from ctypes import c_double
 from datetime import timedelta
 from itertools import product
-import numpy
+import numpy as np
 import os
 import sys
 from csv_logger import CSVLogger
@@ -74,7 +74,7 @@ def run_experiment(
         )
 
     times *= 1e6  # convert to microseconds
-    elapsed = numpy.mean(times)
+    elapsed = np.mean(times)
     flop_count = wload.get_complexity()[0]
     gflops = flop_count / (elapsed * 1e-6) / 1e9
 
@@ -323,9 +323,9 @@ def check_constraints(params: dict, verbose: bool = False) -> bool:
 
 
 def get_divisors(n: int, min_tile: int = 32, max_tile: int = 256) -> list[int]:
-    p = numpy.ceil(n / max_tile)
+    p = np.ceil(n / max_tile)
     q = n // min_tile
-    candidates = n / numpy.arange(max(p, 1), q + 1)
+    candidates = n / np.arange(max(p, 1), q + 1)
     candidates = [int(v) for v in candidates if int(v) == v]
     return candidates[::-1]
 
