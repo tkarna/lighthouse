@@ -2,7 +2,6 @@
 Genetic algorithm-based optimization of kernel parameters.
 """
 
-import csv
 import numpy as np
 import random
 import time
@@ -217,25 +216,3 @@ class GeneticAlgorithm:
         toc = time.perf_counter()
         if verbose:
             print(f"\nTime spent in optimization: {toc - tic:.2f} s\n")
-
-
-def load_experiment_data(
-    csv_file: str, variable_set: VariableSet, cost_param: str = "time (ms)"
-) -> dict:
-    print(f"\nLoading experiment data from {csv_file} ...")
-    experiment_data = {}
-    fieldnames = variable_set.names()
-    with open(csv_file, "r") as f:
-        reader = csv.DictReader(f)
-        # verify that all variable names and cost_param are in the csv header
-        for param in fieldnames + [cost_param]:
-            if param not in reader.fieldnames:
-                raise ValueError(f"Parameter '{param}' not found in CSV file.")
-        for row in reader:
-            # Use a tuple of parameters as key
-            key = tuple(int(row[param]) for param in variable_set.names())
-            value = float(row[cost_param])
-            if value == 0.0:
-                value = float("inf")
-            experiment_data[key] = value
-    return experiment_data
