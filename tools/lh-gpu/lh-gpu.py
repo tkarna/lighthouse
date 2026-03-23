@@ -1,14 +1,11 @@
 #! /usr/bin/env python
 
 import argparse
-import ctypes
 
 from lighthouse import dialects as lh_dialects
 from lighthouse.pipeline.helper import import_mlir_module
-from lighthouse.ingress.mlir_gen.gpu_utils import emit_gpu_util_funcs
 from lighthouse.schedule.xegpu.mlp_schedule import get_schedule_module
 from lighthouse.workload.runner import get_engine
-from lighthouse.utils.numpy import numpy_to_ctype
 from lighthouse.utils.memref import to_packed_args
 
 import numpy as np
@@ -17,17 +14,20 @@ from mlir.dialects import transform
 from mlir.dialects.transform import structured
 from mlir.dialects import func, linalg
 
-from mlir.runtime.np_to_memref import (
-    make_nd_memref_descriptor,
-    as_ctype,
-)
-from mlir.execution_engine import ExecutionEngine
 from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 
-from lighthouse.utils.memref import to_ctype as memref_to_ctype
 
 from lighthouse.dialects import transform_ext
 from lighthouse.schedule import schedule_boilerplate
+from memory_manager import GPUMemoryManager
+
+
+def mlir_to_numpy_type(mlir_type):
+    if isinstance(mlir_type, ir.F32Type):
+        return np.float32
+    if isinstance(mlir_type, ir.F16Type):
+        return np.float16
+    raise ValueError(f"Unsupported MLIR type: {mlir_type}")
 
 
 def get_bench_wrapper_schedule(
@@ -47,25 +47,6 @@ def get_bench_wrapper_schedule(
 
     schedule.body.operations[0].verify()
     return schedule
-
-
-def allocate_device_array(
-    shape: tuple[int, ...],
-    dtype_str: str,
-    execution_engine: ExecutionEngine,
-) -> ctypes.Structure:
-    dtype = {
-        "f16": np.float16,
-        "f32": np.float32,
-    }[dtype_str]
-    mref = make_nd_memref_descriptor(len(shape), as_ctype(dtype))()
-    ptr_mref = memref_to_ctype(mref)
-    ptr_dims = [ctypes.pointer(ctypes.c_int32(d)) for d in shape]
-    rank = len(shape)
-    assert rank in (1, 2), "Only 1d or 2d arrays are supported."
-    suffix = f"{rank}d_{dtype_str}"
-    execution_engine.invoke("gpu_alloc_" + suffix, ptr_mref, *ptr_dims)
-    return mref
 
 
 def inspect_payload(payload_module: ir.Module) -> dict:
@@ -129,15 +110,13 @@ if __name__ == "__main__":
 
         payload_module = import_mlir_module(args.payload_module, ctx)
 
+        # Extract function argument shapes and types and matmul shapes
+        # TODO: Inspect the payload and determine if it is suitable for known
+        # lowering pipelines, e.g. MLP-like func, no allocs, no return values
         function_metadata = inspect_payload(payload_module)
         assert len(function_metadata) == 1, (
             "Expected exactly one function in the payload module."
         )
-
-        # TODO: Inspect the payload and determine if it is suitable for known
-        # lowering pipelines, e.g. MLP-like func, no allocs, no return values
-
-        # TODO: Inspect the payload and extract function argument descriptors
         payload_func_name = function_metadata.keys().__iter__().__next__()
         function_metadata = function_metadata[payload_func_name]
         assert len(function_metadata["results"]) == 0, (
@@ -163,30 +142,10 @@ if __name__ == "__main__":
             a = np.random.randint(-3, 4, shape)
             return a.astype(dtype)
 
-        def mlir_to_numpy_type(mlir_type):
-            if isinstance(mlir_type, ir.F32Type):
-                return np.float32
-            if isinstance(mlir_type, ir.F16Type):
-                return np.float16
-            raise ValueError(f"Unsupported MLIR type: {mlir_type}")
-
-        def mlir_to_type_str(mlir_type):
-            if isinstance(mlir_type, ir.F32Type):
-                return "f32"
-            if isinstance(mlir_type, ir.F16Type):
-                return "f16"
-            raise ValueError(f"Unsupported MLIR type: {mlir_type}")
-
         host_arrays = [
             gen_random(shape, mlir_to_numpy_type(dtype))
             for shape, dtype in arg_metadata
         ]
-
-        # Emit gpu helper funcs in the payload module
-        arg_kinds = set((dtype, len(shape)) for shape, dtype in arg_metadata)
-        with ir.InsertionPoint(payload_module.body):
-            for elem_type, rank in arg_kinds:
-                emit_gpu_util_funcs(elem_type, rank)
 
         # TODO hook up with parameter selector, it should live in lighthouse
         # TODO parameter selector should have sane default case for non-optimized shapes (?)
@@ -235,6 +194,9 @@ if __name__ == "__main__":
             ),
         )
 
+        # Emit utility functions for memory manager (if any)
+        GPUMemoryManager.emit_memory_management_funcs(payload_module, arg_metadata)
+
         # Lower payload
         for schedule_module in schedule_modules:
             schedule_module.body.operations[0].apply(payload_module)
@@ -243,56 +205,36 @@ if __name__ == "__main__":
         execution_engine = get_engine(payload_module, shared_libs=shared_libs)
 
         # Allocate device arrays
-        # TODO add memory manager abstraction.
-        gpu_memrefs = [
-            (
-                dtype,
-                allocate_device_array(shape, mlir_to_type_str(dtype), execution_engine),
-            )
-            for shape, dtype in arg_metadata
-        ]
+        gpu_mem_manager = GPUMemoryManager(execution_engine)
+        with gpu_mem_manager.allocate_buffers(arg_metadata) as gpu_memrefs:
+            # Copy host arrays to device
+            for host_np_arr, gpu_mref in zip(host_arrays, gpu_memrefs):
+                host_mref = get_ranked_memref_descriptor(host_np_arr)
+                gpu_mem_manager.copy_to_device(host_mref, gpu_mref)
 
-        # Copy host arrays to device
-        for host_arr, (dtype, gpu_mref) in zip(host_arrays, gpu_memrefs):
-            copy_func_name = "gpu_copy_2d_" + mlir_to_type_str(dtype)
-            execution_engine.invoke(
-                copy_func_name, numpy_to_ctype(host_arr), memref_to_ctype(gpu_mref)
-            )
+            # allocate buffer for timings
+            time_array = np.zeros((nruns,), dtype=np.float64)
+            time_memref = get_ranked_memref_descriptor(time_array)
 
-        # allocate buffer for timings
-        time_array = np.zeros((nruns,), dtype=np.float64)
-        time_memref = get_ranked_memref_descriptor(time_array)
+            if benchmark:
+                # call benchmark function
+                all_args = gpu_memrefs + [time_memref, nruns, nwarmup]
+                packed_args_with_time = to_packed_args(all_args)
+                benchmark_func = execution_engine.lookup(benchmark_func_name)
+                benchmark_func(packed_args_with_time)
 
-        if benchmark:
-            # call benchmark function
-            all_args = [arr for _, arr in gpu_memrefs] + [time_memref, nruns, nwarmup]
-            packed_args_with_time = to_packed_args(all_args)
-            benchmark_func = execution_engine.lookup(benchmark_func_name)
-            benchmark_func(packed_args_with_time)
-
-            # calculate timings
-            time_array *= 1e6  # convert to microseconds
-            mean = np.mean(time_array)
-            min = np.min(time_array)
-            max = np.max(time_array)
-            std = np.std(time_array)
-            print(
-                f"Timings (us): mean = {mean:.2f} +/-{std:.2f} min={min:.2f} max={max:.2f}"
-            )
-        else:
-            # call payload function once
-            all_args = [arr for _, arr in gpu_memrefs]
-            packed_args = to_packed_args(all_args)
-            payload_func = execution_engine.lookup(payload_func_name)
-            payload_func(packed_args)
-
-        # deallocate device arrays
-        for dtype, gpu_mref in gpu_memrefs:
-            rank = len(gpu_mref.shape)
-            dtype_str = mlir_to_type_str(dtype)
-            suffix = f"{rank}d_{dtype_str}"
-            execution_engine.invoke("gpu_dealloc_" + suffix, memref_to_ctype(gpu_mref))
-
-        # done.
-        # NOTE computing FLOPS will not be supported.
-        # NOTE correctness test will not be supported.
+                # calculate timings
+                time_array *= 1e6  # convert to microseconds
+                mean = np.mean(time_array)
+                min = np.min(time_array)
+                max = np.max(time_array)
+                std = np.std(time_array)
+                print(
+                    f"Timings (us): mean = {mean:.2f} +/-{std:.2f} min={min:.2f} max={max:.2f}"
+                )
+            else:
+                # call payload function once
+                all_args = [arr for _, arr in gpu_memrefs]
+                packed_args = to_packed_args(all_args)
+                payload_func = execution_engine.lookup(payload_func_name)
+                payload_func(packed_args)
