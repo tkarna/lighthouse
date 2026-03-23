@@ -19,7 +19,7 @@ from mlir.runtime.np_to_memref import get_ranked_memref_descriptor
 
 from lighthouse.dialects import transform_ext
 from lighthouse.schedule import schedule_boilerplate
-from memory_manager import GPUMemoryManager
+from memory_manager import MemoryManager, GPUMemoryManager
 
 
 def mlir_to_numpy_type(mlir_type):
@@ -85,6 +85,72 @@ def inspect_payload(payload_module: ir.Module) -> dict:
     return functions
 
 
+def execute(
+    payload_module: ir.Module,
+    payload_function_name: str,
+    schedule_modules: list[ir.Module],
+    host_np_inputs: list[np.ndarray],
+    MemManager: type[MemoryManager],
+    arg_metadata: list[tuple[tuple[int, ...], type]],
+    shared_libs: list[str],
+    benchmark: bool = False,
+):
+    # Emit utility functions for memory manager (if any)
+    MemManager.emit_memory_management_funcs(payload_module, arg_metadata)
+
+    if benchmark:
+        bench_func_name = payload_func_name + "_benchmark"
+        schedule_modules = [
+            get_bench_wrapper_schedule(
+                payload_function_name=payload_function_name,
+                benchmark_function_name=bench_func_name,
+            )
+        ] + schedule_modules
+
+    # Lower payload
+    for schedule_module in schedule_modules:
+        schedule_module.body.operations[0].apply(payload_module)
+
+    # Create execution engine
+    execution_engine = get_engine(payload_module, shared_libs=shared_libs)
+
+    # Allocate device arrays
+    mem_manager = MemManager(execution_engine)
+    with mem_manager.allocate_buffers(arg_metadata) as memrefs:
+        # Copy host arrays to device
+        for host_np_arr, mref in zip(host_np_inputs, memrefs):
+            host_mref = get_ranked_memref_descriptor(host_np_arr)
+            mem_manager.copy_to_device(host_mref, mref)
+
+        if benchmark:
+            # Allocate buffer for timings
+            time_array = np.zeros((nruns,), dtype=np.float64)
+            time_memref = get_ranked_memref_descriptor(time_array)
+
+            # Call benchmark function
+            all_args = memrefs + [time_memref, nruns, nwarmup]
+            packed_args_with_time = to_packed_args(all_args)
+            benchmark_func = execution_engine.lookup(bench_func_name)
+            benchmark_func(packed_args_with_time)
+
+            # Calculate timings
+            time_array *= 1e6  # convert to microseconds
+            mean = np.mean(time_array)
+            min = np.min(time_array)
+            max = np.max(time_array)
+            std = np.std(time_array)
+            print(f"Running benchmark for function '{payload_function_name}'...")
+            print(
+                f"Timings (us): mean = {mean:.2f} +/-{std:.2f} min={min:.2f} max={max:.2f}"
+            )
+        else:
+            # Call payload function once
+            print(f"Running payload function '{payload_function_name}'...")
+            packed_args = to_packed_args(memrefs)
+            payload_func = execution_engine.lookup(payload_function_name)
+            payload_func(packed_args)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="""Lighthouse Intel GPU compiler and execution engine."""
@@ -96,7 +162,6 @@ if __name__ == "__main__":
         help="Whether to time the kernel. If not set, will just run the payload once.",
     )
     args = parser.parse_args()
-    benchmark = args.benchmark
 
     # Other cli args
     nruns = 500
@@ -142,7 +207,7 @@ if __name__ == "__main__":
             a = np.random.randint(-3, 4, shape)
             return a.astype(dtype)
 
-        host_arrays = [
+        host_np_inputs = [
             gen_random(shape, mlir_to_numpy_type(dtype))
             for shape, dtype in arg_metadata
         ]
@@ -177,64 +242,23 @@ if __name__ == "__main__":
         # Get schedules
         # TODO get schedules from CLI?
         # NOTE at the moment we only have 1 schedule, and it cannot be broken apart.
-        schedule_modules = []
-        if benchmark:
-            schedule_modules.append(
-                get_bench_wrapper_schedule(
-                    payload_function_name=payload_func_name,
-                    benchmark_function_name=benchmark_func_name,
-                )
-            )
-        schedule_modules.append(
+        schedule_modules = [
             get_schedule_module(
                 has_bias=has_bias,
                 has_relu=has_relu,
                 has_convert_c=has_convert_c,
                 params=[matmul_parameters],
             ),
+        ]
+
+        # Run benchmark
+        execute(
+            payload_module,
+            payload_func_name,
+            schedule_modules,
+            host_np_inputs,
+            GPUMemoryManager,
+            arg_metadata,
+            shared_libs,
+            benchmark=args.benchmark,
         )
-
-        # Emit utility functions for memory manager (if any)
-        GPUMemoryManager.emit_memory_management_funcs(payload_module, arg_metadata)
-
-        # Lower payload
-        for schedule_module in schedule_modules:
-            schedule_module.body.operations[0].apply(payload_module)
-
-        # Create execution engine
-        execution_engine = get_engine(payload_module, shared_libs=shared_libs)
-
-        # Allocate device arrays
-        gpu_mem_manager = GPUMemoryManager(execution_engine)
-        with gpu_mem_manager.allocate_buffers(arg_metadata) as gpu_memrefs:
-            # Copy host arrays to device
-            for host_np_arr, gpu_mref in zip(host_arrays, gpu_memrefs):
-                host_mref = get_ranked_memref_descriptor(host_np_arr)
-                gpu_mem_manager.copy_to_device(host_mref, gpu_mref)
-
-            # allocate buffer for timings
-            time_array = np.zeros((nruns,), dtype=np.float64)
-            time_memref = get_ranked_memref_descriptor(time_array)
-
-            if benchmark:
-                # call benchmark function
-                all_args = gpu_memrefs + [time_memref, nruns, nwarmup]
-                packed_args_with_time = to_packed_args(all_args)
-                benchmark_func = execution_engine.lookup(benchmark_func_name)
-                benchmark_func(packed_args_with_time)
-
-                # calculate timings
-                time_array *= 1e6  # convert to microseconds
-                mean = np.mean(time_array)
-                min = np.min(time_array)
-                max = np.max(time_array)
-                std = np.std(time_array)
-                print(
-                    f"Timings (us): mean = {mean:.2f} +/-{std:.2f} min={min:.2f} max={max:.2f}"
-                )
-            else:
-                # call payload function once
-                all_args = [arr for _, arr in gpu_memrefs]
-                packed_args = to_packed_args(all_args)
-                payload_func = execution_engine.lookup(payload_func_name)
-                payload_func(packed_args)
