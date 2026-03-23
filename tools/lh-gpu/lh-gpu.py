@@ -87,22 +87,30 @@ def inspect_payload(payload_module: ir.Module) -> dict:
 
 def execute(
     payload_module: ir.Module,
-    payload_function_name: str,
     schedule_modules: list[ir.Module],
     host_np_inputs: list[np.ndarray],
     MemManager: type[MemoryManager],
-    arg_metadata: list[tuple[tuple[int, ...], type]],
     shared_libs: list[str],
     benchmark: bool = False,
 ):
+    # Get payload function name
+    function_metadata = inspect_payload(payload_module)
+    assert len(function_metadata) == 1, (
+        "Expected exactly one function in the payload module."
+    )
+    payload_func_name = function_metadata.keys().__iter__().__next__()
+    assert len(function_metadata[payload_func_name]["results"]) == 0, (
+        "Expected payload function to have no return values."
+    )
+
     # Emit utility functions for memory manager (if any)
-    MemManager.emit_memory_management_funcs(payload_module, arg_metadata)
+    MemManager.emit_memory_management_funcs(payload_module, host_np_inputs)
 
     if benchmark:
         bench_func_name = payload_func_name + "_benchmark"
         schedule_modules = [
             get_bench_wrapper_schedule(
-                payload_function_name=payload_function_name,
+                payload_function_name=payload_func_name,
                 benchmark_function_name=bench_func_name,
             )
         ] + schedule_modules
@@ -112,11 +120,15 @@ def execute(
         schedule_module.body.operations[0].apply(payload_module)
 
     # Create execution engine
+    if benchmark:
+        c_runner_lib = "libmlir_c_runner_utils.so"
+        if c_runner_lib not in shared_libs:
+            shared_libs.append(c_runner_lib)
     execution_engine = get_engine(payload_module, shared_libs=shared_libs)
 
     # Allocate device arrays
     mem_manager = MemManager(execution_engine)
-    with mem_manager.allocate_buffers(arg_metadata) as memrefs:
+    with mem_manager.allocate_buffers(host_np_inputs) as memrefs:
         # Copy host arrays to device
         for host_np_arr, mref in zip(host_np_inputs, memrefs):
             host_mref = get_ranked_memref_descriptor(host_np_arr)
@@ -133,22 +145,13 @@ def execute(
             benchmark_func = execution_engine.lookup(bench_func_name)
             benchmark_func(packed_args_with_time)
 
-            # Calculate timings
-            time_array *= 1e6  # convert to microseconds
-            mean = np.mean(time_array)
-            min = np.min(time_array)
-            max = np.max(time_array)
-            std = np.std(time_array)
-            print(f"Running benchmark for function '{payload_function_name}'...")
-            print(
-                f"Timings (us): mean = {mean:.2f} +/-{std:.2f} min={min:.2f} max={max:.2f}"
-            )
-        else:
-            # Call payload function once
-            print(f"Running payload function '{payload_function_name}'...")
-            packed_args = to_packed_args(memrefs)
-            payload_func = execution_engine.lookup(payload_function_name)
-            payload_func(packed_args)
+            return time_array
+
+        # Call payload function once
+        packed_args = to_packed_args(memrefs)
+        payload_func = execution_engine.lookup(payload_func_name)
+        payload_func(packed_args)
+        return None
 
 
 if __name__ == "__main__":
@@ -176,27 +179,24 @@ if __name__ == "__main__":
         payload_module = import_mlir_module(args.payload_module, ctx)
 
         # Extract function argument shapes and types and matmul shapes
-        # TODO: Inspect the payload and determine if it is suitable for known
-        # lowering pipelines, e.g. MLP-like func, no allocs, no return values
         function_metadata = inspect_payload(payload_module)
         assert len(function_metadata) == 1, (
             "Expected exactly one function in the payload module."
         )
-        payload_func_name = function_metadata.keys().__iter__().__next__()
-        function_metadata = function_metadata[payload_func_name]
+        function_metadata = function_metadata.values().__iter__().__next__()
         assert len(function_metadata["results"]) == 0, (
             "Expected payload function to have no return values."
         )
-
+        arg_metadata = [(i.shape, i.element_type) for i in function_metadata["inputs"]]
+        # TODO: Inspect the payload and determine if it is suitable for known
+        # lowering pipelines, e.g. MLP-like func, no allocs, no return values
         has_bias = False
         has_relu = False
         has_convert_c = False
-        arg_metadata = [(i.shape, i.element_type) for i in function_metadata["inputs"]]
 
         # TODO figure out what shared libs are needed
         shared_libs = [
             "libmlir_levelzero_runtime.so",  # for xegpu target
-            "libmlir_c_runner_utils.so",  # in case we are benchmarking
         ]
 
         # Allocate and initialize host arrays with numpy
@@ -252,13 +252,24 @@ if __name__ == "__main__":
         ]
 
         # Run benchmark
-        execute(
+        time_array = execute(
             payload_module,
-            payload_func_name,
             schedule_modules,
             host_np_inputs,
             GPUMemoryManager,
-            arg_metadata,
             shared_libs,
             benchmark=args.benchmark,
         )
+
+    if args.benchmark:
+        # Calculate timings
+        time_array *= 1e6  # convert to microseconds
+        mean = np.mean(time_array)
+        min = np.min(time_array)
+        max = np.max(time_array)
+        std = np.std(time_array)
+        print(
+            f"Timings (us): mean = {mean:.2f} +/-{std:.2f} min={min:.2f} max={max:.2f}"
+        )
+    else:
+        print("Payload executed successfully.")
