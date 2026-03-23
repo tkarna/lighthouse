@@ -15,6 +15,7 @@ import numpy as np
 from mlir import ir
 from mlir.dialects import transform
 from mlir.dialects.transform import structured
+from mlir.dialects import func, linalg
 
 from mlir.runtime.np_to_memref import (
     make_nd_memref_descriptor,
@@ -67,6 +68,42 @@ def allocate_device_array(
     return mref
 
 
+def inspect_payload(payload_module: ir.Module) -> dict:
+    """Inspect the payload module and extract metadata about the functions/ops it contains."""
+
+    functions = {}
+
+    def match_funcs(op: ir.Operation) -> ir.WalkResult:
+        op = op.opview
+        match op:
+            case func.FuncOp():
+                matmuls = []
+
+                def match_linalg(op: ir.Operation) -> ir.WalkResult:
+                    op = op.opview
+                    match op:
+                        case linalg.MatmulOp():
+                            inputs = op.inputs
+                            outputs = op.outputs
+                            assert len(inputs) == 2 and len(outputs) == 1
+                            m, k = inputs[0].type.shape
+                            _, n = inputs[1].type.shape
+                            matmuls.append((m, n, k))
+                    return ir.WalkResult.ADVANCE
+
+                op.walk(match_linalg, ir.WalkOrder.PRE_ORDER)
+                functions[op.sym_name.value] = {
+                    "inputs": op.type.inputs,
+                    "results": op.type.results,
+                    "matmuls": matmuls,
+                }
+        return ir.WalkResult.ADVANCE
+
+    op = payload_module.body.operations[0]
+    op.walk(match_funcs, ir.WalkOrder.PRE_ORDER)
+    return functions
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="""Lighthouse Intel GPU compiler and execution engine."""
@@ -92,19 +129,25 @@ if __name__ == "__main__":
 
         payload_module = import_mlir_module(args.payload_module, ctx)
 
+        function_metadata = inspect_payload(payload_module)
+        assert len(function_metadata) == 1, (
+            "Expected exactly one function in the payload module."
+        )
+
         # TODO: Inspect the payload and determine if it is suitable for known
         # lowering pipelines, e.g. MLP-like func, no allocs, no return values
 
         # TODO: Inspect the payload and extract function argument descriptors
-        payload_func_name = "payload"
+        payload_func_name = function_metadata.keys().__iter__().__next__()
+        function_metadata = function_metadata[payload_func_name]
+        assert len(function_metadata["results"]) == 0, (
+            "Expected payload function to have no return values."
+        )
+
         has_bias = False
         has_relu = False
         has_convert_c = False
-        arg_metadata = [
-            ("C", ((4096, 4096), ir.F32Type.get())),
-            ("A", ((4096, 4096), ir.F16Type.get())),
-            ("B", ((4096, 4096), ir.F16Type.get())),
-        ]
+        arg_metadata = [(i.shape, i.element_type) for i in function_metadata["inputs"]]
 
         # TODO figure out what shared libs are needed
         shared_libs = [
@@ -135,36 +178,41 @@ if __name__ == "__main__":
             raise ValueError(f"Unsupported MLIR type: {mlir_type}")
 
         host_arrays = [
-            (name, gen_random(shape, mlir_to_numpy_type(dtype)))
-            for name, (shape, dtype) in arg_metadata
+            gen_random(shape, mlir_to_numpy_type(dtype))
+            for shape, dtype in arg_metadata
         ]
 
         # Emit gpu helper funcs in the payload module
-        arg_kinds = set((dtype, len(shape)) for _, (shape, dtype) in arg_metadata)
+        arg_kinds = set((dtype, len(shape)) for shape, dtype in arg_metadata)
         with ir.InsertionPoint(payload_module.body):
             for elem_type, rank in arg_kinds:
                 emit_gpu_util_funcs(elem_type, rank)
 
         # TODO hook up with parameter selector, it should live in lighthouse
         # TODO parameter selector should have sane default case for non-optimized shapes (?)
+        matmuls = function_metadata["matmuls"]
+        assert len(matmuls) == 1, (
+            "Expected exactly one matmul op in the payload function."
+        )
+        M, N, K = matmuls[0]
         matmul_parameters = {
-            "M": 4096,
-            "N": 4096,
-            "K": 4096,
+            "m": M,
+            "n": N,
+            "k": K,
             "wg_m": 256,
             "wg_n": 256,
             "sg_m": 32,
             "sg_n": 32,
-            "k": 128,
+            "k_tile": 64,
             "load_a_m": 32,
             "load_a_k": 16,
             "load_b_k": 32,
             "load_b_n": 16,
-            "pf_a_m": 8,
-            "pf_a_k": 16,
-            "pf_b_k": 16,
-            "pf_b_n": 16,
-            "pf_nb": 1,
+            "prefetch_a_m": 8,
+            "prefetch_a_k": 32,
+            "prefetch_b_k": 8,
+            "prefetch_b_n": 32,
+            "prefetch_nb": 1,
         }
 
         # Get schedules
@@ -183,8 +231,7 @@ if __name__ == "__main__":
                 has_bias=has_bias,
                 has_relu=has_relu,
                 has_convert_c=has_convert_c,
-                nlayers=1,
-                params={"layer_0": matmul_parameters},
+                params=[matmul_parameters],
             ),
         )
 
@@ -202,11 +249,11 @@ if __name__ == "__main__":
                 dtype,
                 allocate_device_array(shape, mlir_to_type_str(dtype), execution_engine),
             )
-            for _, (shape, dtype) in arg_metadata
+            for shape, dtype in arg_metadata
         ]
 
         # Copy host arrays to device
-        for (name, host_arr), (dtype, gpu_mref) in zip(host_arrays, gpu_memrefs):
+        for host_arr, (dtype, gpu_mref) in zip(host_arrays, gpu_memrefs):
             copy_func_name = "gpu_copy_2d_" + mlir_to_type_str(dtype)
             execution_engine.invoke(
                 copy_func_name, numpy_to_ctype(host_arr), memref_to_ctype(gpu_mref)
