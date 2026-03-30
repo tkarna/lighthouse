@@ -1,0 +1,140 @@
+#!/usr/bin/env python
+
+import argparse
+from lighthouse.pipeline.driver import PipelineDriver
+from lighthouse.pipeline.cli import opt_cli_parser
+from lighthouse.pipeline.helper import import_mlir_module
+from lighthouse.utils.numpy import mlir_to_numpy_dtype
+from lighthouse.execution import execute, benchmark, get_bench_wrapper_schedule
+from lighthouse import dialects as lh_dialects
+from mlir import ir
+from mlir.dialects import func
+import numpy as np
+
+# TODO move helper functions to lighthouse
+
+
+# TODO generalizes to NumpyInitializer?
+def gen_random_input(shape, element_type):
+    np_dtype = mlir_to_numpy_dtype(element_type)
+    return np.random.uniform(-0.5, 0.5, shape).astype(np_dtype)
+
+
+# TODO generalizes to payload analysis tools?
+def inspect_payload(payload_module: ir.Module) -> dict:
+    """
+    Inspect the payload module and extract metadata about the functions/ops it contains.
+
+    Returns a dictionary:
+    {
+        function_name: {
+            "inputs": [input types],
+            "results": [result types],
+        },
+        ...
+    }
+    """
+
+    functions = {}
+
+    def match_funcs(op: ir.Operation) -> ir.WalkResult:
+        op = op.opview
+        match op:
+            case func.FuncOp():
+                functions[op.sym_name.value] = {
+                    "inputs": op.type.inputs,
+                    "results": op.type.results,
+                }
+        return ir.WalkResult.ADVANCE
+
+    for op in payload_module.body.operations:
+        op.walk(match_funcs, ir.WalkOrder.PRE_ORDER)
+    return functions
+
+
+def cli_parser(description: str = None) -> argparse.ArgumentParser:
+    if description is None:
+        description = "Lighthouse Runner: Applies a series of transformations to an input MLIR module, and produces an optimized MLIR module as output. The transformations are applied in argument order. The names of the passes are registered by the driver."
+    parser = opt_cli_parser(description)
+    parser.add_argument(
+        "--entry",
+        required=True,
+        help="Function name to be called.",
+    )
+    parser.add_argument(
+        "-b",
+        "--benchmark",
+        action="store_true",
+        help="Benchmark the payload function and print the execution time.",
+    )
+    parser.add_argument(
+        "--nruns",
+        type=int,
+        default=500,
+        help="Number of runs in benchmarking mode.",
+    )
+    parser.add_argument(
+        "--nwarmup",
+        type=int,
+        default=300,
+        help="Number of warm-up iterations in benchmarking mode.",
+    )
+
+    return parser
+
+
+if __name__ == "__main__":
+    parser = cli_parser()
+    args = parser.parse_args()
+    func_name = args.entry
+
+    with ir.Context() as context, ir.Location.unknown() as loc:
+        lh_dialects.register_and_load()
+
+        # Inspect the payload module to determine function input types etc.
+        payload_mod = import_mlir_module(args.payload_module, context)
+        payload_metadata = inspect_payload(payload_mod)
+        assert func_name in payload_metadata, (
+            f"Function '{func_name}' not found in the payload module."
+        )
+        func_metadata = payload_metadata[func_name]
+        func_inputs = [
+            (ttype.shape, ttype.element_type) for ttype in func_metadata["inputs"]
+        ]
+
+        # NOTE The function signature may change during lowering, e.g. via drop-equivalent-buffer-results
+        # NOTE Here it's assumed that the final lowered function does not have any results.
+
+        # Create create pipeline and apply it.
+        pipeline = PipelineDriver(context)
+        if args.benchmark:
+            # Emit benchmarking wrapper function.
+            schedule_module = get_bench_wrapper_schedule(func_name)
+            pipeline.add_transform(schedule_module)
+        # Add rest of the stages.
+        for stage in args.stage:
+            pipeline.add_pass(stage)
+        optimized_module = pipeline.apply(payload_mod)
+
+        # Allocate and fill function inputs
+        np_inputs = [gen_random_input(shape, etype) for shape, etype in func_inputs]
+
+        if args.benchmark:
+            # Benchmark the payload function.
+            times = benchmark(
+                payload_module=optimized_module,
+                host_input_buffers=np_inputs,
+                nruns=args.nruns,
+                nwarmup=args.nwarmup,
+            )
+            times *= 1e6  # Convert to microseconds
+            exec_time = np.mean(times)
+            print(f"Mean execution time: {exec_time:.6f} us.")
+        else:
+            # Execute the payload function.
+            execute(
+                payload_module=optimized_module,
+                payload_function_name=func_name,
+                host_input_buffers=np_inputs,
+            )
+            print(f"Successfully executed function '{func_name}'.")
