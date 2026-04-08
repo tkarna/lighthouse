@@ -22,8 +22,8 @@ if __name__ == "__main__":
         ]
     ]
     initializers = [
-        "32x32xf32xrnd,32x32xf32xrnd,32x32xf32x0",  # level1/1_Square_matrix_multiplication_.py
-        "16x32xf32xrnd,32x16xf32xrnd,16x16xf32x0",  # level1/2_Standard_matrix_multiplication_.py
+        "32x32xf32x0,32x32xf32xrnd,32x32xf32xrnd",  # level1/1_Square_matrix_multiplication_.py
+        "16x16xf32x0,16x32xf32xrnd,32x16xf32xrnd",  # level1/2_Standard_matrix_multiplication_.py
     ]
 
     for kb_kernel in kb_kernels:
@@ -32,7 +32,7 @@ if __name__ == "__main__":
             str(kb_kernel),
             "--input-shape",
             initializers[kb_kernels.index(kb_kernel)],
-            "--print-tensor=3",
+            "--print-tensor=1",
         ]
         print(f"Running command: {' '.join(command_line)}")
         result = subprocess.run(
