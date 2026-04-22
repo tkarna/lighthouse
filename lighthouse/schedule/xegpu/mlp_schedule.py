@@ -546,6 +546,8 @@ def xegpu_wg_annotation_for_mlp_layer(
     # annotate store op
     store_op_c = match(gpu_func, ops={"xegpu.store_nd"})
     xegpu.set_anchor_layout(store_op_c, **output_layout)
+    load_op_c = xegpu.get_load_op(transform.get_operand(anyvalue, dpas_op, [2]))
+    xegpu.set_anchor_layout(load_op_c, **output_layout)
 
     # annotate the 1d load of the broadcast op with a slice layout
     # FIXME assert that we only match one add op
