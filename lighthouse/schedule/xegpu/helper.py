@@ -12,7 +12,12 @@ def bundle_xegpu_to_binary(
     """Schedule for lowering xegpu wg level to binary."""
     # upstream xegpu/xevm pipeline is payload independent.
     mod = apply_registered_pass(
-        mod, "gpu-lower-to-xevm-pipeline", options={"xegpu-op-level": "workgroup"}
+        mod,
+        "gpu-lower-to-xevm-pipeline",
+        options={
+            "xegpu-op-level": "workgroup",
+            "igc-cmd-options": "-ze-opt-large-register-file",
+        },
     )
 
     if stop_at_stage == "final":
