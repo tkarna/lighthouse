@@ -14,6 +14,7 @@ from tune_utils import dump_configs_json, execute_and_log
 from genetic_algorithm import (
     init_random_population,
     GeneticAlgorithm,
+    Population,
 )
 from csv_logger import CSVLogger
 
@@ -30,6 +31,7 @@ def optimize_kernel(
     ngenerations: int = 30,
     mutation_rate: float = 0.001,
     dump_json: int = 0,
+    init_candidates: Optional[list[dict]] = None,
     random_seed: Optional[int] = None,
 ):
     if random_seed is not None:
@@ -77,7 +79,17 @@ def optimize_kernel(
         )
         return gflops
 
-    pop = init_random_population(npopulation, var_set)
+    pop = Population(variable_set=var_set)
+    if init_candidates is not None:
+        # add given initial candidates to the population
+        for candidate in init_candidates:
+            params_tuple = list(candidate[param.name] for param in var_set.variables)
+            if not var_set.is_valid(params_tuple):
+                raise ValueError(f"Invalid initial candidate: {candidate}")
+            if params_tuple not in pop.individuals:
+                pop.individuals.append(params_tuple)
+    pop = init_random_population(npopulation, var_set, population=pop)
+
     ga_optimizer = GeneticAlgorithm(
         population=pop,
         mutation_rate=mutation_rate,
@@ -143,6 +155,61 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Always include these configurations in the initial population
+    init_candidates = [
+        {
+            "wg_m": 256,
+            "wg_n": 256,
+            "sg_m": 64,
+            "sg_n": 32,
+            "k_tile": 32,
+            "load_a_m": 32,
+            "load_a_k": 32,
+            "load_b_k": 32,
+            "load_b_n": 32,
+            "prefetch_a_m": 16,
+            "prefetch_a_k": 16,
+            "prefetch_b_k": 16,
+            "prefetch_b_n": 32,
+            "prefetch_a_nb": 1,
+            "prefetch_b_nb": 2,
+        },
+        {
+            "wg_m": 256,
+            "wg_n": 256,
+            "sg_m": 32,
+            "sg_n": 64,
+            "k_tile": 32,
+            "load_a_m": 32,
+            "load_a_k": 32,
+            "load_b_k": 32,
+            "load_b_n": 32,
+            "prefetch_a_m": 16,
+            "prefetch_a_k": 32,
+            "prefetch_b_k": 16,
+            "prefetch_b_n": 16,
+            "prefetch_a_nb": 1,
+            "prefetch_b_nb": 1,
+        },
+        {
+            "wg_m": 128,
+            "wg_n": 128,
+            "sg_m": 32,
+            "sg_n": 32,
+            "k_tile": 32,
+            "load_a_m": 16,
+            "load_a_k": 16,
+            "load_b_k": 16,
+            "load_b_n": 16,
+            "prefetch_a_m": 16,
+            "prefetch_a_k": 16,
+            "prefetch_b_k": 16,
+            "prefetch_b_n": 16,
+            "prefetch_a_nb": 1,
+            "prefetch_b_nb": 1,
+        },
+    ]
+
     optimize_kernel(
         args.sizes,
         args.bias,
@@ -153,5 +220,6 @@ if __name__ == "__main__":
         mutation_rate=args.mutation_rate,
         npopulation=args.population_size,
         dump_json=args.n_dump_json,
+        init_candidates=init_candidates,
         random_seed=2,
     )

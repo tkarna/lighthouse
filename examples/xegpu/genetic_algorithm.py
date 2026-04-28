@@ -107,9 +107,11 @@ class Population:
         print("\n")
 
 
-def init_random_population(pop_size: int, variable_set: VariableSet) -> Population:
-    population = Population(variable_set=variable_set)
-    population.individuals = []
+def init_random_population(
+    pop_size: int, variable_set: VariableSet, population=None
+) -> Population:
+    if population is None:
+        population = Population(variable_set=variable_set)
     i = 0
     while len(population.individuals) < pop_size:
         sample = variable_set.random_sample()
