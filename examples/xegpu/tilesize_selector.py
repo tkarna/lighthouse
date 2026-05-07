@@ -45,14 +45,6 @@ gpu_specs_db = {
     "B580": gpu_specs_B580,
 }
 
-# Tile size selection strategy
-# WG level
-# - Saturate global memory bandwidth.
-# - Fit in SLM.
-# SG level
-# - Saturate local memory bandwidth.
-# - Fit in register file.
-
 
 def get_int_factors(n):
     "Return a and b such that n = a * b."
@@ -198,14 +190,12 @@ def estimate_perf(
     total_footprint = A_footprint + B_footprint
     if verbose:
         print(
-            f"Total SLM footprint: {total_footprint / 1024:.1f} / {gpu_specs['local_mem_size'] / 1024:.1f} KB"
+            f"Total SLM footprint: {total_footprint / 1024:.1f} / "
+            f"{gpu_specs['local_mem_size'] / 1024:.1f} KB"
         )
 
     if total_footprint > gpu_specs["local_mem_size"]:
         raise ValueError("SLM footprint exceeds local memory size.")
-
-    # flops = 2 * wg_tile[0] * wg_tile[1] * k_tile
-    # print(f"FLOPs per tile: {flops/1e6:.2f} MFLOPs")
 
     # arithmetic intensity
     f = (wg_tile[0] * wg_tile[1]) / (wg_tile[0] + wg_tile[1])
@@ -225,10 +215,10 @@ def estimate_perf(
     if verbose:
         print(f"XE core utilization: {xe_core_utilization:.2f}")
 
-    # predicted flops
+    # predict flops
     peak_flops = (
         gpu_specs["peak_flops"] * xe_core_utilization
-    )  # possible underutilization
+    )  # possible under-utilization
     predicted_throughput = min(peak_flops, ai * gpu_specs["bw_global_mem"])
     if verbose:
         print(f"Predicted throughput: {predicted_throughput / 1e12:.2f} TFLOPS")
@@ -249,7 +239,7 @@ def estimate_perf(
 
     if nb_sgs > gpu_specs["max_nb_threads"]:
         raise ValueError(
-            f"Number of SGs per WG ({nb_sgs}) exceeds max threads ({gpu_specs['max_nb_threads']})."
+            f"Number of SGs ({nb_sgs}) exceeds max threads ({gpu_specs['max_nb_threads']})."
         )
 
     A_sg_shape = (sg_tile[0], k_tile)
@@ -317,8 +307,13 @@ def estimate_perf(
     return predicted_throughput
 
 
-def generate_configs(M, N, K, gpu_specs, load_strategy="dpas", pf_strategy="best"):
+def generate_configs(
+    M, N, K, gpu_specs, perf_threshold=None, load_strategy="dpas", pf_strategy="best"
+):
     """Generate valid tile size configurations based on the selection strategy.
+
+    perf_threshold: if set, only return configurations with
+    estimated_perf >= perf_threshold * max_found_estimated_perf.
 
     load_strategy: sets the load tile selection strategy
     - "large": use the largest supported load tile
@@ -342,7 +337,7 @@ def generate_configs(M, N, K, gpu_specs, load_strategy="dpas", pf_strategy="best
 
     # define search space
     wg_options = [64, 128, 256]
-    sg_options = [32, 64, 128]  # TODO sg min could be 16 ?
+    sg_options = [32, 64, 128]
     k_tile_options = [16, 32, 64]
 
     wg_tiles = product(wg_options, wg_options)
@@ -408,6 +403,11 @@ def generate_configs(M, N, K, gpu_specs, load_strategy="dpas", pf_strategy="best
 
     # sort by performance (descending)
     valid_configs.sort(key=lambda x: x[0], reverse=True)
+
+    if perf_threshold is not None:
+        assert 0 < perf_threshold <= 1, "perf_threshold must be in (0, 1]"
+        max_perf = valid_configs[0][0]
+        valid_configs = [c for c in valid_configs if c[0] >= perf_threshold * max_perf]
 
     return valid_configs
 

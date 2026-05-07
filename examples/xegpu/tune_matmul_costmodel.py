@@ -80,11 +80,13 @@ if __name__ == "__main__":
 
     load_strategy = "dpas"
     prefetch_strategy = "all"
+    perf_threshold = 0.8  # skip config if perf_estimate < th * best_perf_estimate
     print(f"{load_strategy=}")
     print(f"{prefetch_strategy=}")
     configs = generate_configs(
         *sizes,
         gpu_specs,
+        perf_threshold=perf_threshold,
         load_strategy=load_strategy,
         pf_strategy=prefetch_strategy,
     )
