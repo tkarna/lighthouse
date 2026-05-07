@@ -78,7 +78,16 @@ if __name__ == "__main__":
     print(f"{accumulate_c=}")
     sys.stdout.flush()
 
-    configs = generate_configs(*sizes, gpu_specs)
+    load_strategy = "dpas"
+    prefetch_strategy = "all"
+    print(f"{load_strategy=}")
+    print(f"{prefetch_strategy=}")
+    configs = generate_configs(
+        *sizes,
+        gpu_specs,
+        load_strategy=load_strategy,
+        pf_strategy=prefetch_strategy,
+    )
     print(f"Total complexity: {len(configs)} configurations")
 
     i = 0

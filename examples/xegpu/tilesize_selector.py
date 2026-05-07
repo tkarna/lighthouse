@@ -68,7 +68,7 @@ def get_int_factors(n):
     return factors
 
 
-def check_prefetch_tile(tile, data_shape, gpu_specs, name="A"):
+def check_prefetch_tile(tile, data_shape, gpu_specs, name="A", verbose=False):
     shape = data_shape
     if tile[0] < PFETCH_MIN_ROWS:
         raise ValueError(
@@ -93,6 +93,9 @@ def check_prefetch_tile(tile, data_shape, gpu_specs, name="A"):
     rows = int(shape[0] / tile[0])
     cols = int(shape[1] / tile[1])
     nb_threads = int(rows * cols)
+    if verbose:
+        print(f"=== Prefetch {name} ===")
+        print(f"tile size {tile}, grid size ({rows}, {cols}), {nb_threads} threads")
     if nb_threads > gpu_specs["max_nb_threads"]:
         raise ValueError(
             f"Number of threads for {name} prefetch ({nb_threads}) exceeds max threads ({gpu_specs['max_nb_threads']})."
@@ -100,14 +103,14 @@ def check_prefetch_tile(tile, data_shape, gpu_specs, name="A"):
     return rows, cols
 
 
-def check_prefetch_tile_a(tile, wg_tile, k_tile, gpu_specs):
+def check_prefetch_tile_a(tile, wg_tile, k_tile, gpu_specs, verbose=False):
     data_shape = (wg_tile[0], k_tile)
-    return check_prefetch_tile(tile, data_shape, gpu_specs, name="A")
+    return check_prefetch_tile(tile, data_shape, gpu_specs, name="A", verbose=verbose)
 
 
-def check_prefetch_tile_b(tile, wg_tile, k_tile, gpu_specs):
+def check_prefetch_tile_b(tile, wg_tile, k_tile, gpu_specs, verbose=False):
     data_shape = (k_tile, wg_tile[1])
-    return check_prefetch_tile(tile, data_shape, gpu_specs, name="B")
+    return check_prefetch_tile(tile, data_shape, gpu_specs, name="B", verbose=verbose)
 
 
 def generate_prefetch_tiles(wg_tile, k_tile, gpu_specs, n=None):
@@ -301,11 +304,15 @@ def estimate_perf(
 
     if prefetch_tile_a:
         # check that prefetch tile is suitable for WG-k tile
-        check_prefetch_tile_a(prefetch_tile_a, wg_tile, k_tile, gpu_specs)
+        check_prefetch_tile_a(
+            prefetch_tile_a, wg_tile, k_tile, gpu_specs, verbose=verbose
+        )
 
     if prefetch_tile_b:
         # check that prefetch tile is suitable for WG-k tile
-        check_prefetch_tile_b(prefetch_tile_b, wg_tile, k_tile, gpu_specs)
+        check_prefetch_tile_b(
+            prefetch_tile_b, wg_tile, k_tile, gpu_specs, verbose=verbose
+        )
 
     return predicted_throughput
 
@@ -383,6 +390,9 @@ def generate_configs(M, N, K, gpu_specs, load_strategy="dpas", pf_strategy="best
             if load_strategy == "large":
                 load_a_list = [(32, 32)]
                 load_b_list = [(32, 32)]
+            elif load_strategy == "double-rows":
+                load_a_list = [(DPAS.A_TILE[0] * 2, DPAS.A_TILE[1])]
+                load_b_list = [(DPAS.B_TILE[0] * 2, DPAS.B_TILE[1])]
             else:
                 load_a_list = [DPAS.A_TILE]
                 load_b_list = [DPAS.B_TILE]
@@ -403,9 +413,13 @@ def generate_configs(M, N, K, gpu_specs, load_strategy="dpas", pf_strategy="best
 
 
 if __name__ == "__main__":
-    M = 4096
-    N = 4096
-    K = 4096
+    # M = 4096
+    # N = 4096
+    # K = 4096
+
+    M = 128
+    N = 8192
+    K = 16384
 
     device = "B70"
 
@@ -421,18 +435,25 @@ if __name__ == "__main__":
     # sg_tile = [64, 32]  # M, N
     # prefetch_tile_a = [16, 16]
     # prefetch_tile_b = [16, 32]
-    # perf = estimate_perf(M, N, K, wg_tile, sg_tile, k_tile, gpu_specs, verbose=False,
+
+    # wg_tile = [128, 256]  # M, N
+    # k_tile = 32
+    # sg_tile = [64, 32]  # M, N
+    # # prefetch_tile_a = [16, 16]
+    # # prefetch_tile_a = [16, 16]
+    # prefetch_tile_a = [8, 16]
+    # prefetch_tile_b = [8, 32]
+    # perf = estimate_perf(M, N, K, wg_tile, sg_tile, k_tile, gpu_specs, verbose=True,
     #                      prefetch_tile_a=prefetch_tile_a, prefetch_tile_b=prefetch_tile_b)
     # print(f"Estimated performance: {perf/1e12:.2f} TFLOPS")
 
-    # print(get_int_factors(32))
-    # pf_a_list, pf_b_list = generate_prefetch_tiles(wg_tile, k_tile)
-    # print("Valid prefetch tiles for A:")
-    # for pf_a in pf_a_list:
-    #     print(pf_a)
-    # print("Valid prefetch tiles for B:")
-    # for pf_b in pf_b_list:
-    #     print(pf_b)
+    # # pf_a_list, pf_b_list = generate_prefetch_tiles(wg_tile, k_tile)
+    # # print("Valid prefetch tiles for A:")
+    # # for pf_a in pf_a_list:
+    # #     print(pf_a)
+    # # print("Valid prefetch tiles for B:")
+    # # for pf_b in pf_b_list:
+    # #     print(pf_b)
     # exit(0)
 
     configs = generate_configs(M, N, K, gpu_specs)
