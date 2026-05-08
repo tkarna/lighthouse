@@ -81,6 +81,7 @@ if __name__ == "__main__":
     load_strategy = "dpas"
     prefetch_strategy = "all"
     perf_threshold = 0.8  # skip config if perf_estimate < th * best_perf_estimate
+    max_nb_configs = None
     print(f"{load_strategy=}")
     print(f"{prefetch_strategy=}")
     configs = generate_configs(
@@ -89,6 +90,7 @@ if __name__ == "__main__":
         perf_threshold=perf_threshold,
         load_strategy=load_strategy,
         pf_strategy=prefetch_strategy,
+        max_nb_configs=max_nb_configs,
     )
     print(f"Total complexity: {len(configs)} configurations")
 

@@ -308,7 +308,14 @@ def estimate_perf(
 
 
 def generate_configs(
-    M, N, K, gpu_specs, perf_threshold=None, load_strategy="dpas", pf_strategy="best"
+    M,
+    N,
+    K,
+    gpu_specs,
+    perf_threshold=None,
+    load_strategy="dpas",
+    pf_strategy="best",
+    max_nb_configs=None,
 ):
     """Generate valid tile size configurations based on the selection strategy.
 
@@ -408,6 +415,9 @@ def generate_configs(
         assert 0 < perf_threshold <= 1, "perf_threshold must be in (0, 1]"
         max_perf = valid_configs[0][0]
         valid_configs = [c for c in valid_configs if c[0] >= perf_threshold * max_perf]
+
+    if max_nb_configs is not None:
+        valid_configs = valid_configs[:max_nb_configs]
 
     return valid_configs
 
