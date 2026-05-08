@@ -86,7 +86,7 @@ if __name__ == "__main__":
     prefetch_strategy = "all"
     perf_threshold = 0.8  # skip config if perf_estimate < th * best_perf_estimate
     max_nb_configs = None
-    nb_select_load_tune = 4  # number of top configs to select for load tile tuning
+    nb_select_load_tune = 1  # number of top configs to select for load tile tuning
 
     print(f"{load_strategy=}")
     print(f"{prefetch_strategy=}")
@@ -156,11 +156,9 @@ if __name__ == "__main__":
         # take n best configs and tune load tile sizes
         print(f"Tuning load tiles for best {nb_select_load_tune} configurations")
         configs = [c[1] for c in executed_configs[:nb_select_load_tune]]
-        print("nb parent configs:", len(configs))
         new_configs = expand_configs_with_load_tiles(
             configs, load_strategy="all", exclude_duplicates=True
         )
-        print("nb new configs:", len(new_configs))
 
         executed_configs2, time2, iters2 = eval_configs(new_configs)
         executed_configs.extend(executed_configs2)
