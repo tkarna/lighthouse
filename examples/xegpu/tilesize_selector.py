@@ -6,6 +6,8 @@ from lighthouse.schedule.xegpu.mlp_schedule import (
     PFETCH_MAX_ROWS,
     PFETCH_MIN_COLS,
     PFETCH_MIN_ROWS,
+    LOAD_MAX_COLS,
+    LOAD_MAX_ROWS,
     DPAS,
 )
 from tune_matmul_gridsearch import check_constraints
@@ -139,6 +141,29 @@ def generate_prefetch_tiles(wg_tile, k_tile, gpu_specs, n=None):
             prefetch_tiles_b = prefetch_tiles_b[:n]
 
     return prefetch_tiles_a, prefetch_tiles_b
+
+
+def generate_load_tiles(min_rows=8, min_cols=8):
+    # FIXME load tile must divide sg_tile and k tile
+    load_elems = [8, 16, 32]
+    load_tiles = []
+    for a, b in product(load_elems, load_elems):
+        if (
+            a >= min_rows
+            and a <= LOAD_MAX_ROWS
+            and b >= min_cols
+            and b <= LOAD_MAX_COLS
+        ):
+            load_tiles.append((a, b))
+    return load_tiles
+
+
+def generate_load_tiles_a():
+    return generate_load_tiles(min_rows=DPAS.A_TILE[0], min_cols=DPAS.A_TILE[1])
+
+
+def generate_load_tiles_b():
+    return generate_load_tiles(min_rows=DPAS.B_TILE[0], min_cols=DPAS.B_TILE[1])
 
 
 def estimate_perf(
@@ -307,6 +332,30 @@ def estimate_perf(
     return predicted_throughput
 
 
+def tuple_to_param_dict(M, N, K, config):
+    wg_tile, sg_tile, k_tile, ld_a, ld_b, pf_a, pf_b = config
+    return {
+        "m": M,
+        "n": N,
+        "k": K,
+        "wg_m": wg_tile[0],
+        "wg_n": wg_tile[1],
+        "sg_m": sg_tile[0],
+        "sg_n": sg_tile[1],
+        "k_tile": k_tile,
+        "load_a_m": ld_a[0],
+        "load_a_k": ld_a[1],
+        "load_b_k": ld_b[0],
+        "load_b_n": ld_b[1],
+        "prefetch_a_m": pf_a[0],
+        "prefetch_a_k": pf_a[1],
+        "prefetch_b_k": pf_b[0],
+        "prefetch_b_n": pf_b[1],
+        "prefetch_a_nb": 1,
+        "prefetch_b_nb": 1,
+    }
+
+
 def generate_configs(
     M,
     N,
@@ -350,29 +399,6 @@ def generate_configs(
     wg_tiles = product(wg_options, wg_options)
     sg_tiles = product(sg_options, sg_options)
 
-    def to_param_dict(config):
-        wg_tile, sg_tile, k_tile, ld_a, ld_b, pf_a, pf_b = config
-        return {
-            "m": M,
-            "n": N,
-            "k": K,
-            "wg_m": wg_tile[0],
-            "wg_n": wg_tile[1],
-            "sg_m": sg_tile[0],
-            "sg_n": sg_tile[1],
-            "k_tile": k_tile,
-            "load_a_m": ld_a[0],
-            "load_a_k": ld_a[1],
-            "load_b_k": ld_b[0],
-            "load_b_n": ld_b[1],
-            "prefetch_a_m": pf_a[0],
-            "prefetch_a_k": pf_a[1],
-            "prefetch_b_k": pf_b[0],
-            "prefetch_b_n": pf_b[1],
-            "prefetch_a_nb": 1,
-            "prefetch_b_nb": 1,
-        }
-
     # grid search
     valid_configs = []
     for config in product(wg_tiles, sg_tiles, k_tile_options):
@@ -402,7 +428,7 @@ def generate_configs(
                 load_a_list, load_b_list, pf_a_list, pf_b_list
             ):
                 c = (wg_tile, sg_tile, k_tile, la, lb, pa, pb)
-                params = to_param_dict(c)
+                params = tuple_to_param_dict(M, N, K, c)
                 if check_constraints(params, verbose=False):
                     valid_configs.append((perf, params))
         except ValueError:
@@ -420,6 +446,41 @@ def generate_configs(
         valid_configs = valid_configs[:max_nb_configs]
 
     return valid_configs
+
+
+def expand_configs_with_load_tiles(
+    param_list, load_strategy="dpas", exclude_duplicates=False
+):
+    """Expand the configs with different load tile options."""
+    expanded_configs = []
+    for params in param_list:
+        if load_strategy == "all":
+            load_a_list = generate_load_tiles_a()
+            load_b_list = generate_load_tiles_b()
+        elif load_strategy == "large":
+            load_a_list = [(32, 32)]
+            load_b_list = [(32, 32)]
+        elif load_strategy == "double-rows":
+            load_a_list = [(DPAS.A_TILE[0] * 2, DPAS.A_TILE[1])]
+            load_b_list = [(DPAS.B_TILE[0] * 2, DPAS.B_TILE[1])]
+        else:
+            load_a_list = [DPAS.A_TILE]
+            load_b_list = [DPAS.B_TILE]
+
+        for la, lb in product(load_a_list, load_b_list):
+            new_params = params.copy()
+            new_params["load_a_m"] = la[0]
+            new_params["load_a_k"] = la[1]
+            new_params["load_b_k"] = lb[0]
+            new_params["load_b_n"] = lb[1]
+            if (
+                check_constraints(new_params, verbose=False)
+                and new_params not in expanded_configs
+                and (not exclude_duplicates or new_params not in param_list)
+            ):
+                expanded_configs.append(new_params)
+
+    return expanded_configs
 
 
 if __name__ == "__main__":

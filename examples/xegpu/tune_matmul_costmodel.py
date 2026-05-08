@@ -8,7 +8,11 @@ from csv_logger import CSVLogger
 
 from matmul import cli_parser
 from tune_utils import dump_configs_json, execute_and_log
-from tilesize_selector import generate_configs, gpu_specs_db
+from tilesize_selector import (
+    generate_configs,
+    gpu_specs_db,
+    expand_configs_with_load_tiles,
+)
 from tune_matmul_gridsearch import check_constraints, run_experiment
 
 
@@ -82,6 +86,8 @@ if __name__ == "__main__":
     prefetch_strategy = "all"
     perf_threshold = 0.8  # skip config if perf_estimate < th * best_perf_estimate
     max_nb_configs = None
+    nb_select_load_tune = 4  # number of top configs to select for load tile tuning
+
     print(f"{load_strategy=}")
     print(f"{prefetch_strategy=}")
     configs = generate_configs(
@@ -92,44 +98,90 @@ if __name__ == "__main__":
         pf_strategy=prefetch_strategy,
         max_nb_configs=max_nb_configs,
     )
-    print(f"Total complexity: {len(configs)} configurations")
+    configs = [params for _, params in configs]
 
-    i = 0
-    executed_configs = []
-    tic = perf_counter()
-    for perf_estimate, params in configs:
-        if not check_constraints(params, verbose=True):
-            print(f"Skipping invalid configuration: {params}")
-            continue
+    def eval_configs(configs):
+        print(f"Total complexity: {len(configs)} configurations")
+        i = 0
+        executed_configs = []
+        tic = perf_counter()
+        for params in configs:
+            if not check_constraints(params, verbose=True):
+                print(f"Skipping invalid configuration: {params}")
+                continue
 
-        i += 1
-        if args.max_iters is not None and i >= args.max_iters:
-            print(f"Reached maximum number of iterations: {args.max_iters}")
-            break
-        if args.dry_run:
-            continue
-        time, gflops = execute_and_log(
-            run_experiment,
-            csv_logger,
-            nruns,
-            nwarmup,
-            params,
-            check_result=not args.no_check_result,
-            timeout=timeout,
-            ab_type=ab_type,
-            c_type=c_type,
-            has_bias=has_bias,
-            has_relu=has_relu,
-            accumulate_c=accumulate_c,
+            i += 1
+            if args.max_iters is not None and i >= args.max_iters:
+                print(f"Reached maximum number of iterations: {args.max_iters}")
+                break
+            if args.dry_run:
+                continue
+            time, gflops = execute_and_log(
+                run_experiment,
+                csv_logger,
+                nruns,
+                nwarmup,
+                params,
+                check_result=not args.no_check_result,
+                timeout=timeout,
+                ab_type=ab_type,
+                c_type=c_type,
+                has_bias=has_bias,
+                has_relu=has_relu,
+                accumulate_c=accumulate_c,
+            )
+            executed_configs.append((gflops, params))
+
+        duration = perf_counter() - tic
+
+        return executed_configs, duration, i
+
+    executed_configs, time, iters = eval_configs(configs)
+
+    if nb_select_load_tune is not None and nb_select_load_tune > 0:
+        time1 = time
+        iters1 = iters
+
+        print(f"Number of executed configurations: {iters1}")
+        print(f"Time spent in tuning: {timedelta(seconds=time1)}")
+
+        # Summary of first phase
+        n_print = 10
+        executed_configs.sort(key=lambda x: x[0], reverse=True)
+        best_configs = [c for c in executed_configs[:n_print]]
+        print("Best configurations found in first tuning phase:")
+        for gflops, params in best_configs:
+            print(f" GFLOPS: {gflops:.2f}: {list(params.values())}")
+
+        # take n best configs and tune load tile sizes
+        print(f"Tuning load tiles for best {nb_select_load_tune} configurations")
+        configs = [c[1] for c in executed_configs[:nb_select_load_tune]]
+        print("nb parent configs:", len(configs))
+        new_configs = expand_configs_with_load_tiles(
+            configs, load_strategy="all", exclude_duplicates=True
         )
-        executed_configs.append((gflops, params))
+        print("nb new configs:", len(new_configs))
 
-    duration = perf_counter() - tic
-    print(f"Number of executed configurations: {i}")
-    print(f"Total duration: {timedelta(seconds=duration)}")
+        executed_configs2, time2, iters2 = eval_configs(new_configs)
+        executed_configs.extend(executed_configs2)
+
+        print(f"Number of executed configurations: {iters2}")
+        print(f"Time spent in tuning: {timedelta(seconds=time2)}")
+
+        # Summary of second phase
+        executed_configs.sort(key=lambda x: x[0], reverse=True)
+        best_configs = [c for c in executed_configs[:n_print]]
+        print("Best configurations found after load tile tuning:")
+        for gflops, params in best_configs:
+            print(f" GFLOPS: {gflops:.2f}: {list(params.values())}")
+
+        time = time1 + time2
+        iters = iters1 + iters2
+
+    print(f"Total duration: {timedelta(seconds=time)}")
+    print(f"Number of executed configurations: {iters}")
 
     if args.n_dump_json > 0 and not args.dry_run:
-        executed_configs.sort(key=lambda x: x[0], reverse=True)
         best_configs = [c for c in executed_configs[: args.n_dump_json]]
         print("Best configurations found:")
         for gflops, params in best_configs:
