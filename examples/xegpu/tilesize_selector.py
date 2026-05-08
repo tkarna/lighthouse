@@ -483,6 +483,28 @@ def expand_configs_with_load_tiles(
     return expanded_configs
 
 
+def expand_configs_with_prefetch_depth(
+    param_list, max_depth=2, exclude_duplicates=False
+):
+    """Expand the configs with different prefetch depth options."""
+    pf_depth_list = list(range(1, max_depth + 1))
+
+    expanded_configs = []
+    for params in param_list:
+        for a, b in product(pf_depth_list, pf_depth_list):
+            new_params = params.copy()
+            new_params["prefetch_a_nb"] = a
+            new_params["prefetch_b_nb"] = b
+            if (
+                check_constraints(new_params, verbose=False)
+                and new_params not in expanded_configs
+                and (not exclude_duplicates or new_params not in param_list)
+            ):
+                expanded_configs.append(new_params)
+
+    return expanded_configs
+
+
 if __name__ == "__main__":
     # M = 4096
     # N = 4096

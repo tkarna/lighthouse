@@ -12,6 +12,7 @@ from tilesize_selector import (
     generate_configs,
     gpu_specs_db,
     expand_configs_with_load_tiles,
+    expand_configs_with_prefetch_depth,
 )
 from tune_matmul_gridsearch import check_constraints, run_experiment
 
@@ -87,6 +88,7 @@ if __name__ == "__main__":
     perf_threshold = 0.8  # skip config if perf_estimate < th * best_perf_estimate
     max_nb_configs = None
     nb_select_load_tune = 1  # number of top configs to select for load tile tuning
+    nb_select_pfnb_tune = 4  # number of top configs to select for prefetch depth
 
     print(f"{load_strategy=}")
     print(f"{prefetch_strategy=}")
@@ -142,8 +144,8 @@ if __name__ == "__main__":
         time1 = time
         iters1 = iters
 
-        print(f"Number of executed configurations: {iters1}")
         print(f"Time spent in tuning: {timedelta(seconds=time1)}")
+        print(f"Number of executed configurations: {iters1}")
 
         # Summary of first phase
         n_print = 10
@@ -163,13 +165,40 @@ if __name__ == "__main__":
         executed_configs2, time2, iters2 = eval_configs(new_configs)
         executed_configs.extend(executed_configs2)
 
-        print(f"Number of executed configurations: {iters2}")
         print(f"Time spent in tuning: {timedelta(seconds=time2)}")
+        print(f"Number of executed configurations: {iters2}")
 
         # Summary of second phase
         executed_configs.sort(key=lambda x: x[0], reverse=True)
         best_configs = [c for c in executed_configs[:n_print]]
         print("Best configurations found after load tile tuning:")
+        for gflops, params in best_configs:
+            print(f" GFLOPS: {gflops:.2f}: {list(params.values())}")
+
+        time = time1 + time2
+        iters = iters1 + iters2
+
+    if nb_select_pfnb_tune is not None and nb_select_pfnb_tune > 0:
+        time1 = time
+        iters1 = iters
+
+        # take n best configs and tune prefetch depth
+        print(f"Tuning prefetch depth for best {nb_select_pfnb_tune} configurations")
+        configs = [c[1] for c in executed_configs[:nb_select_pfnb_tune]]
+        new_configs = expand_configs_with_prefetch_depth(
+            configs, max_depth=2, exclude_duplicates=True
+        )
+
+        executed_configs2, time2, iters2 = eval_configs(new_configs)
+        executed_configs.extend(executed_configs2)
+
+        print(f"Time spent in tuning: {timedelta(seconds=time2)}")
+        print(f"Number of executed configurations: {iters2}")
+
+        # Summary of second phase
+        executed_configs.sort(key=lambda x: x[0], reverse=True)
+        best_configs = [c for c in executed_configs[:n_print]]
+        print("Best configurations found after prefetch depth tuning:")
         for gflops, params in best_configs:
             print(f" GFLOPS: {gflops:.2f}: {list(params.values())}")
 
