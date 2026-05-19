@@ -1,4 +1,5 @@
 from itertools import product
+from typing import Callable
 
 from .xegpu_specs import XeGPUSpecs
 from .xegpu_constraints import (
@@ -21,15 +22,15 @@ from .xegpu_constraints import (
 
 
 def generate_configs(
-    M,
-    N,
-    K,
+    M: int,
+    N: int,
+    K: int,
     gpu_specs: XeGPUSpecs,
-    perf_threshold=None,
-    load_strategy="dpas",
-    pf_strategy="best",
-    max_nb_configs=None,
-) -> list[tuple[float, dict]]:
+    perf_threshold: float | None = None,
+    load_strategy: str = "dpas",
+    pf_strategy: str = "best",
+    max_nb_configs: int | None = None,
+) -> list[tuple[float, dict[str, int]]]:
     """Generate valid tile size configurations based on the selection strategy.
 
     perf_threshold: if set, only return configurations with
@@ -49,7 +50,20 @@ def generate_configs(
 
     assert load_strategy == "dpas", "Only 'dpas' load strategy is supported"
 
-    def tuple_to_param_dict(M, N, K, config):
+    def tuple_to_param_dict(
+        M: int,
+        N: int,
+        K: int,
+        config: tuple[
+            tuple[int, int],
+            tuple[int, int],
+            int,
+            tuple[int, int],
+            tuple[int, int],
+            tuple[int, int],
+            tuple[int, int],
+        ],
+    ) -> dict[str, int]:
         wg_tile, sg_tile, k_tile, ld_a, ld_b, pf_a, pf_b = config
         return {
             "m": M,
@@ -124,11 +138,11 @@ def generate_configs(
 
 
 def expand_configs_with_load_tiles(
-    param_list,
+    param_list: list[dict[str, int]],
     gpu_specs: XeGPUSpecs,
-    load_strategy="dpas",
-    exclude_duplicates=False,
-):
+    load_strategy: str = "dpas",
+    exclude_duplicates: bool = False,
+) -> list[dict[str, int]]:
     """
     Expand the parameter configs with different load tile options.
 
@@ -170,11 +184,11 @@ def expand_configs_with_load_tiles(
 
 
 def expand_configs_with_prefetch_depth(
-    param_list,
+    param_list: list[dict[str, int]],
     gpu_specs: XeGPUSpecs,
-    max_depth=2,
-    exclude_duplicates=False,
-):
+    max_depth: int = 2,
+    exclude_duplicates: bool = False,
+) -> list[dict[str, int]]:
     """
     Expand the parameter configs with different prefetch depth options.
 
@@ -205,18 +219,26 @@ def expand_configs_with_prefetch_depth(
 
 
 def generate_prefetch_tiles(
-    wg_tile,
-    k_tile,
+    wg_tile: tuple[int, int],
+    k_tile: int,
     gpu_specs: XeGPUSpecs,
-    n=None,
-):
+    n: int | None = None,
+) -> tuple[
+    list[tuple[int, int]] | tuple[int, int],
+    list[tuple[int, int]] | tuple[int, int],
+]:
     """Generates valid prefetch tile sizes for A and B.
 
     Candidates are sorted by number of threads (descending) and then by how
     balanced the thread grid is (descending).
     """
 
-    def gridsearch(check_fn):
+    def gridsearch(
+        check_fn: Callable[
+            [tuple[int, int], tuple[int, int], int, XeGPUSpecs],
+            tuple[int, int],
+        ],
+    ) -> list[tuple[int, int]]:
         tiles = []
         for rows in range(PFETCH_MIN_ROWS, PFETCH_MAX_ROWS + 1):
             for cols in range(PFETCH_MIN_COLS, PFETCH_MAX_COLS + 1):
@@ -245,7 +267,11 @@ def generate_prefetch_tiles(
     return prefetch_tiles_a, prefetch_tiles_b
 
 
-def generate_load_tiles(check_func: callable, sg_tile, k_tile):
+def generate_load_tiles(
+    check_func: Callable[[tuple[int, int], tuple[int, int], int], None],
+    sg_tile: tuple[int, int],
+    k_tile: int,
+) -> list[tuple[int, int]]:
     """Generates valid load tile sizes for A or B based on the check function."""
     load_elems = [8, 16, 32]
     load_tiles = []
@@ -260,28 +286,32 @@ def generate_load_tiles(check_func: callable, sg_tile, k_tile):
     return load_tiles
 
 
-def generate_load_tiles_a(sg_tile, k_tile):
+def generate_load_tiles_a(
+    sg_tile: tuple[int, int], k_tile: int
+) -> list[tuple[int, int]]:
     """Generates valid load tile sizes for A."""
     return generate_load_tiles(check_load_tile_a, sg_tile, k_tile)
 
 
-def generate_load_tiles_b(sg_tile, k_tile):
+def generate_load_tiles_b(
+    sg_tile: tuple[int, int], k_tile: int
+) -> list[tuple[int, int]]:
     """Generates valid load tile sizes for B."""
     return generate_load_tiles(check_load_tile_b, sg_tile, k_tile)
 
 
 def estimate_performance(
-    M,
-    N,
-    K,
-    wg_tile,
-    sg_tile,
-    k_tile,
+    M: int,
+    N: int,
+    K: int,
+    wg_tile: tuple[int, int],
+    sg_tile: tuple[int, int],
+    k_tile: int,
     gpu_specs: XeGPUSpecs,
-    prefetch_tile_a=None,
-    prefetch_tile_b=None,
-    verbose=True,
-):
+    prefetch_tile_a: tuple[int, int] | None = None,
+    prefetch_tile_b: tuple[int, int] | None = None,
+    verbose: bool = True,
+) -> float:
     """
     Estimate the performance of the given tile size configuration for (M,N,K)
     matrix multiplication on the target GPU.
