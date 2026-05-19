@@ -32,7 +32,7 @@ def check_sg_tile(
     wg_tile: tuple[int, int],
     sg_tile: tuple[int, int],
     gpu_specs: XeGPUSpecs,
-    min_nb_threads=None,
+    min_nb_threads: int | None = None,
 ) -> tuple[int, int]:
     if wg_tile[0] % sg_tile[0] != 0:
         raise ValueError("sg_tile_m does not divide wg_tile_m")
@@ -59,7 +59,12 @@ def check_k_tile(K: int, k_tile: int):
         raise ValueError("k_tile not multiple of dpas_k")
 
 
-def check_load_tile(tile, parent_shape, child_shape, name="A"):
+def check_load_tile(
+    tile: tuple[int, int],
+    parent_shape: tuple[int, int],
+    child_shape: tuple[int, int],
+    name: str = "A",
+):
     if parent_shape[0] % tile[0] != 0 or parent_shape[1] % tile[1] != 0:
         raise ValueError(
             f"Load tile {name} {tile} does not divide the parent shape {parent_shape}."
@@ -78,26 +83,34 @@ def check_load_tile(tile, parent_shape, child_shape, name="A"):
         raise ValueError(f"Load tile {name} {tile} has too many cols.")
 
 
-def check_load_tile_a(tile, sg_tile, k_tile):
+def check_load_tile_a(
+    tile: tuple[int, int],
+    sg_tile: tuple[int, int],
+    k_tile: int,
+):
     data_shape = (sg_tile[0], k_tile)
     child_shape = DPAS.A_TILE
-    return check_load_tile(tile, data_shape, child_shape, name="A")
+    check_load_tile(tile, data_shape, child_shape, name="A")
 
 
-def check_load_tile_b(tile, sg_tile, k_tile):
+def check_load_tile_b(
+    tile: tuple[int, int],
+    sg_tile: tuple[int, int],
+    k_tile: int,
+):
     data_shape = (k_tile, sg_tile[1])
     child_shape = DPAS.B_TILE
-    return check_load_tile(tile, data_shape, child_shape, name="B")
+    check_load_tile(tile, data_shape, child_shape, name="B")
 
 
 def check_prefetch_tile(
-    tile,
-    data_shape,
+    tile: tuple[int, int],
+    data_shape: tuple[int, int],
     gpu_specs: XeGPUSpecs,
-    name="A",
-    min_nb_threads=None,
-    verbose=False,
-):
+    name: str = "A",
+    min_nb_threads: int | None = None,
+    verbose: bool = False,
+) -> tuple[int, int]:
     if tile[0] < PFETCH_MIN_ROWS:
         raise ValueError(
             f"Prefetch tile {name} {tile} has too few rows (min {PFETCH_MIN_ROWS})."
@@ -136,13 +149,13 @@ def check_prefetch_tile(
 
 
 def check_prefetch_tile_a(
-    tile,
-    wg_tile,
-    k_tile,
+    tile: tuple[int, int],
+    wg_tile: tuple[int, int],
+    k_tile: int,
     gpu_specs: XeGPUSpecs,
-    min_nb_threads=None,
-    verbose=False,
-):
+    min_nb_threads: int | None = None,
+    verbose: bool = False,
+) -> tuple[int, int]:
     data_shape = (wg_tile[0], k_tile)
     return check_prefetch_tile(
         tile,
@@ -155,13 +168,13 @@ def check_prefetch_tile_a(
 
 
 def check_prefetch_tile_b(
-    tile,
-    wg_tile,
-    k_tile,
+    tile: tuple[int, int],
+    wg_tile: tuple[int, int],
+    k_tile: int,
     gpu_specs: XeGPUSpecs,
-    min_nb_threads=None,
-    verbose=False,
-):
+    min_nb_threads: int | None = None,
+    verbose: bool = False,
+) -> tuple[int, int]:
     data_shape = (k_tile, wg_tile[1])
     return check_prefetch_tile(
         tile,
@@ -174,7 +187,7 @@ def check_prefetch_tile_b(
 
 
 def check_constraints(
-    params: dict,
+    params: dict[str, int],
     gpu_specs: XeGPUSpecs,
     verbose: bool = False,
 ) -> bool:
