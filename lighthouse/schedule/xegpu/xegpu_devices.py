@@ -1,4 +1,4 @@
-__all__ = ["gpu_specs_db"]
+__all__ = ["get_gpu_specs"]
 
 
 # GPU specs
@@ -11,7 +11,6 @@ gpu_bmg_common = {
     # "nb_registers": 128,  # small register file
 }
 
-# Intel Arc B70
 gpu_specs_B70 = {
     "name": "Intel Arc B70",
     "nb_xe_cores": 32,
@@ -20,7 +19,6 @@ gpu_specs_B70 = {
     **gpu_bmg_common,
 }
 
-# Intel Arc B580
 gpu_specs_B580 = {
     "name": "Intel Arc B580",
     "nb_xe_cores": 20,
@@ -33,3 +31,11 @@ gpu_specs_db = {
     "B70": gpu_specs_B70,
     "B580": gpu_specs_B580,
 }
+
+
+def get_gpu_specs(device_name: str) -> dict:
+    if device_name not in gpu_specs_db:
+        raise ValueError(
+            f"Unknown device name: {device_name}. Available devices: {list(gpu_specs_db.keys())}"
+        )
+    return gpu_specs_db[device_name]
