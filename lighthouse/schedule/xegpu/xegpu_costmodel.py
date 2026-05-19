@@ -77,7 +77,7 @@ def generate_load_tiles_b(sg_tile, k_tile):
     return generate_load_tiles(check_load_tile_b, sg_tile, k_tile)
 
 
-def estimate_perf(
+def estimate_performance(
     M,
     N,
     K,
@@ -239,7 +239,6 @@ def generate_configs(
     estimated_perf >= perf_threshold * max_found_estimated_perf.
 
     load_strategy: sets the load tile selection strategy
-    - "large": use the largest supported load tile
     - "dpas": use dpas op A/B tile size as load tile
 
     pf_strategy: sets the prefetch tile selection strategy
@@ -250,7 +249,8 @@ def generate_configs(
     A list of (perf_estimate, params_dict) tuples sorted by perf_estimate (descending).
     """
     # TODO add data types as variables
-    # TODO dpas tile sizes should be in gpu_specs
+
+    assert load_strategy == "dpas", "Only 'dpas' load strategy is supported"
 
     def tuple_to_param_dict(M, N, K, config):
         wg_tile, sg_tile, k_tile, ld_a, ld_b, pf_a, pf_b = config
@@ -288,7 +288,7 @@ def generate_configs(
     for config in product(wg_tiles, sg_tiles, k_tile_options):
         wg_tile, sg_tile, k_tile = config
         try:
-            perf = estimate_perf(
+            perf = estimate_performance(
                 M, N, K, wg_tile, sg_tile, k_tile, gpu_specs, verbose=False
             )
             if pf_strategy == "best":
@@ -299,15 +299,9 @@ def generate_configs(
                 pf_a_list, pf_b_list = generate_prefetch_tiles(
                     wg_tile, k_tile, gpu_specs
                 )
-            if load_strategy == "large":
-                load_a_list = [(32, 32)]
-                load_b_list = [(32, 32)]
-            elif load_strategy == "double-rows":
-                load_a_list = [(DPAS.A_TILE[0] * 2, DPAS.A_TILE[1])]
-                load_b_list = [(DPAS.B_TILE[0] * 2, DPAS.B_TILE[1])]
-            else:
-                load_a_list = [DPAS.A_TILE]
-                load_b_list = [DPAS.B_TILE]
+            # load_strategy = "dpas"
+            load_a_list = [DPAS.A_TILE]
+            load_b_list = [DPAS.B_TILE]
             for la, lb, pa, pb in product(
                 load_a_list, load_b_list, pf_a_list, pf_b_list
             ):
@@ -335,7 +329,13 @@ def generate_configs(
 def expand_configs_with_load_tiles(
     param_list, gpu_specs, load_strategy="dpas", exclude_duplicates=False
 ):
-    """Expand the parameter configs with different load tile options."""
+    """
+    Expand the parameter configs with different load tile options.
+
+    load_strategy: sets the load tile selection strategy
+    - "dpas": use dpas op A/B tile size as load tile
+    - "all": append all valid load tiles for A and B
+    """
     expanded_configs = []
     for params in param_list:
         sg_tile = (params["sg_m"], params["sg_n"])
