@@ -8,181 +8,82 @@ from lighthouse.schedule.xegpu.mlp_schedule import (
     PFETCH_MIN_ROWS,
     LOAD_MAX_COLS,
     LOAD_MAX_ROWS,
-    MAX_NB_SG_THREADS,
     MIN_NB_THREADS,
     DPAS,
 )
 
 
-def check_constraints(params: dict, verbose: bool = False) -> bool:
-    """Check that the given tile size configuration is valid."""
+def check_wg_tile(M: int, N: int, wg_tile: tuple[int, int]):
+    if M % wg_tile[0] != 0:
+        raise ValueError("wg_tile_m does not divide M")
+    if N % wg_tile[1] != 0:
+        raise ValueError("wg_tile_n does not divide N")
 
-    # FIXME generalize and refactor, e.g. re-use check_prefetch_tile_a/b
-    def print_reason(msg):
-        if verbose:
-            print(f"  Invalid: {msg}")
 
-    M = params["m"]
-    N = params["n"]
-    wg_tile_m = params["wg_m"]
-    wg_tile_n = params["wg_n"]
-    sg_tile_m = params["sg_m"]
-    sg_tile_n = params["sg_n"]
-    load_tile_a_m = params["load_a_m"]
-    load_tile_a_k = params["load_a_k"]
-    load_tile_b_k = params["load_b_k"]
-    load_tile_b_n = params["load_b_n"]
-    prefetch_tile_a_m = params["prefetch_a_m"]
-    prefetch_tile_a_k = params["prefetch_a_k"]
-    prefetch_tile_b_k = params["prefetch_b_k"]
-    prefetch_tile_b_n = params["prefetch_b_n"]
-    k_tile = params["k_tile"]
-
-    if M % wg_tile_m != 0:
-        print_reason("wg_tile_m does not divide M")
-        return False
-    if N % wg_tile_n != 0:
-        print_reason("wg_tile_n does not divide N")
-        return False
-    if wg_tile_m % sg_tile_m != 0:
-        print_reason("sg_tile_m does not divide wg_tile_m")
-        return False
-    if wg_tile_n % sg_tile_n != 0:
-        print_reason("sg_tile_n does not divide wg_tile_n")
-        return False
-    if sg_tile_m % DPAS.M != 0:
-        print_reason("sg_tile_m not multiple of dpas_m")
-        return False
-    if sg_tile_n % DPAS.N != 0:
-        print_reason("sg_tile_n not multiple of dpas_n")
-        return False
-    if k_tile % DPAS.K != 0:
-        print_reason("k_tile not multiple of dpas_k")
-        return False
-
-    # SG level thread layout: [nb_sg_threads_m, nb_sg_threads_n]
-    nb_sg_threads_m = wg_tile_m // sg_tile_m
-    nb_sg_threads_n = wg_tile_n // sg_tile_n
+def check_sg_tile(
+    wg_tile: tuple[int, int],
+    sg_tile: tuple[int, int],
+    gpu_specs: dict,
+    min_nb_threads=None,
+):
+    if wg_tile[0] % sg_tile[0] != 0:
+        raise ValueError("sg_tile_m does not divide wg_tile_m")
+    if wg_tile[1] % sg_tile[1] != 0:
+        raise ValueError("sg_tile_n does not divide wg_tile_n")
+    if sg_tile[0] % DPAS.M != 0:
+        raise ValueError("sg_tile_m not multiple of dpas_m")
+    if sg_tile[1] % DPAS.N != 0:
+        raise ValueError("sg_tile_n not multiple of dpas_n")
+    nb_sg_threads_m = wg_tile[0] // sg_tile[0]
+    nb_sg_threads_n = wg_tile[1] // sg_tile[1]
     nb_sg_threads = nb_sg_threads_m * nb_sg_threads_n
-    if nb_sg_threads > MAX_NB_SG_THREADS:
-        print_reason("too many sg threads")
-        return False
-    if nb_sg_threads < MIN_NB_THREADS:
-        print_reason("too few sg threads")
-        return False
-
-    if sg_tile_m % load_tile_a_m != 0:
-        print_reason("load_tile_a_m does not divide sg_tile_m")
-        return False
-    if k_tile % load_tile_a_k != 0:
-        print_reason("load_tile_a_k does not divide k_tile")
-        return False
-    if k_tile % load_tile_b_k != 0:
-        print_reason("load_tile_b_k does not divide k_tile")
-        return False
-    if sg_tile_n % load_tile_b_n != 0:
-        print_reason("load_tile_b_n does not divide sg_tile_n")
-        return False
-    if load_tile_a_m > LOAD_MAX_ROWS:
-        print_reason("too large load_tile_a_m")
-        return False
-    if load_tile_a_k > LOAD_MAX_COLS:
-        print_reason("too large load_tile_a_k")
-        return False
-    if load_tile_b_k > LOAD_MAX_ROWS:
-        print_reason("too large load_tile_b_k")
-        return False
-    if load_tile_b_n > LOAD_MAX_COLS:
-        print_reason("too large load_tile_b_n")
-        return False
-    if sg_tile_m % prefetch_tile_a_m != 0:
-        print_reason("prefetch_tile_a_m does not divide sg_tile_m")
-        return False
-    if k_tile % prefetch_tile_a_k != 0:
-        print_reason("prefetch_tile_a_k does not divide k_tile")
-        return False
-    if k_tile % prefetch_tile_b_k != 0:
-        print_reason("prefetch_tile_b_k does not divide k_tile")
-        return False
-    if sg_tile_n % prefetch_tile_b_n != 0:
-        print_reason("prefetch_tile_b_n does not divide sg_tile_n")
-        return False
-    if prefetch_tile_a_m > PFETCH_MAX_ROWS:
-        print_reason("too large prefetch_tile_a_m")
-        return False
-    if prefetch_tile_a_k > PFETCH_MAX_COLS:
-        print_reason("too large prefetch_tile_a_k")
-        return False
-    if prefetch_tile_b_k > PFETCH_MAX_ROWS:
-        print_reason("too large prefetch_tile_b_k")
-        return False
-    if prefetch_tile_b_n > PFETCH_MAX_COLS:
-        print_reason("too large prefetch_tile_b_n")
-        return False
-    if prefetch_tile_a_m < PFETCH_MIN_ROWS:
-        print_reason("too small prefetch_tile_a_m")
-        return False
-    if prefetch_tile_a_k < PFETCH_MIN_COLS:
-        print_reason("too small prefetch_tile_a_k")
-        return False
-    if prefetch_tile_b_k < PFETCH_MIN_ROWS:
-        print_reason("too small prefetch_tile_b_k")
-        return False
-    if prefetch_tile_b_n < PFETCH_MIN_COLS:
-        print_reason("too small prefetch_tile_b_n")
-        return False
-    if load_tile_a_m % DPAS.M != 0:
-        print_reason("load_tile_a_m not multiple of dpas_m")
-        return False
-    if load_tile_a_k % DPAS.K != 0:
-        print_reason("load_tile_a_k not multiple of dpas_k")
-        return False
-    if load_tile_b_k % DPAS.K != 0:
-        print_reason("load_tile_b_k not multiple of dpas_k")
-        return False
-    if load_tile_b_n % DPAS.N != 0:
-        print_reason("load_tile_b_n not multiple of dpas_n")
-        return False
-
-    # prefetch A layout
-    nb_prefetch_a_m = wg_tile_m // prefetch_tile_a_m
-    nb_prefetch_a_k = k_tile // prefetch_tile_a_k
-    if nb_prefetch_a_m * nb_prefetch_a_k > MAX_NB_SG_THREADS:
-        print_reason("too many prefetch A tiles")
-        return False
-    if nb_prefetch_a_m * nb_prefetch_a_k < MIN_NB_THREADS:
-        print_reason("too few prefetch A threads")
-        return False
-
-    # prefetch B layout
-    nb_prefetch_b_k = k_tile // prefetch_tile_b_k
-    nb_prefetch_b_n = wg_tile_n // prefetch_tile_b_n
-    if nb_prefetch_b_k * nb_prefetch_b_n > MAX_NB_SG_THREADS:
-        print_reason("too many prefetch B tiles")
-        return False
-    if nb_prefetch_b_k * nb_prefetch_b_n < MIN_NB_THREADS:
-        print_reason("too few prefetch B threads")
-        return False
-
-    return True
+    if nb_sg_threads > gpu_specs["max_nb_threads"]:
+        raise ValueError("too many sg threads")
+    if min_nb_threads is not None and nb_sg_threads < min_nb_threads:
+        raise ValueError("too few sg threads")
 
 
-def get_int_factors(n):
-    "Return a and b such that n = a * b."
-    factors = []
-    for i in range(1, int(math.sqrt(n)) + 1):
-        if n % i == 0:
-            a = i
-            b = n // i
-            factors.append((a, b))
-            factors.append((b, a))
-    # sort by how close to square the factors are
-    factors.sort(key=lambda x: abs(x[0] - x[1]))
-    return factors
+def check_k_tile(K: int, k_tile: int):
+    if K % k_tile != 0:
+        raise ValueError("k_tile does not divide K")
+    if k_tile % DPAS.K != 0:
+        raise ValueError("k_tile not multiple of dpas_k")
 
 
-def check_prefetch_tile(tile, data_shape, gpu_specs, name="A", verbose=False):
-    shape = data_shape
+def check_load_tile(tile, parent_shape, child_shape, name="A"):
+    if parent_shape[0] % tile[0] != 0 or parent_shape[1] % tile[1] != 0:
+        raise ValueError(
+            f"Load tile {name} {tile} does not divide the parent shape {parent_shape}."
+        )
+    if tile[0] % child_shape[0] != 0 or tile[1] % child_shape[1] != 0:
+        raise ValueError(
+            f"Load tile {name} {tile} does not divide the child shape {child_shape}."
+        )
+    if tile[0] < child_shape[0]:
+        raise ValueError(f"Load tile {name} {tile} has too few rows.")
+    if tile[1] < child_shape[1]:
+        raise ValueError(f"Load tile {name} {tile} has too few cols.")
+    if tile[0] > LOAD_MAX_ROWS:
+        raise ValueError(f"Load tile {name} {tile} has too many rows.")
+    if tile[1] > LOAD_MAX_COLS:
+        raise ValueError(f"Load tile {name} {tile} has too many cols.")
+
+
+def check_load_tile_a(tile, sg_tile, k_tile):
+    data_shape = (sg_tile[0], k_tile)
+    child_shape = DPAS.A_TILE
+    return check_load_tile(tile, data_shape, child_shape, name="A")
+
+
+def check_load_tile_b(tile, sg_tile, k_tile):
+    data_shape = (k_tile, sg_tile[1])
+    child_shape = DPAS.B_TILE
+    return check_load_tile(tile, data_shape, child_shape, name="B")
+
+
+def check_prefetch_tile(
+    tile, data_shape, gpu_specs, name="A", min_nb_threads=None, verbose=False
+):
     if tile[0] < PFETCH_MIN_ROWS:
         raise ValueError(
             f"Prefetch tile {name} {tile} has too few rows (min {PFETCH_MIN_ROWS})."
@@ -199,12 +100,12 @@ def check_prefetch_tile(tile, data_shape, gpu_specs, name="A", verbose=False):
         raise ValueError(
             f"Prefetch tile {name} {tile} has too many cols (max {PFETCH_MAX_COLS})."
         )
-    if shape[0] % tile[0] != 0 or shape[1] % tile[1] != 0:
+    if data_shape[0] % tile[0] != 0 or data_shape[1] % tile[1] != 0:
         raise ValueError(
-            f"Prefetch tile {name} {tile} does not divide the parent shape {shape}."
+            f"Prefetch tile {name} {tile} does not divide the parent shape {data_shape}."
         )
-    rows = int(shape[0] / tile[0])
-    cols = int(shape[1] / tile[1])
+    rows = int(data_shape[0] / tile[0])
+    cols = int(data_shape[1] / tile[1])
     nb_threads = int(rows * cols)
     if verbose:
         print(f"=== Prefetch {name} ===")
@@ -224,6 +125,66 @@ def check_prefetch_tile_a(tile, wg_tile, k_tile, gpu_specs, verbose=False):
 def check_prefetch_tile_b(tile, wg_tile, k_tile, gpu_specs, verbose=False):
     data_shape = (k_tile, wg_tile[1])
     return check_prefetch_tile(tile, data_shape, gpu_specs, name="B", verbose=verbose)
+
+
+def check_constraints(params: dict, gpu_specs: dict, verbose: bool = False) -> bool:
+    """Check that the given tile size configuration is valid."""
+
+    M = params["m"]
+    N = params["n"]
+    K = params["k"]
+    wg_tile_m = params["wg_m"]
+    wg_tile_n = params["wg_n"]
+    sg_tile_m = params["sg_m"]
+    sg_tile_n = params["sg_n"]
+    load_tile_a_m = params["load_a_m"]
+    load_tile_a_k = params["load_a_k"]
+    load_tile_b_k = params["load_b_k"]
+    load_tile_b_n = params["load_b_n"]
+    prefetch_tile_a_m = params["prefetch_a_m"]
+    prefetch_tile_a_k = params["prefetch_a_k"]
+    prefetch_tile_b_k = params["prefetch_b_k"]
+    prefetch_tile_b_n = params["prefetch_b_n"]
+    k_tile = params["k_tile"]
+
+    wg_tile = (wg_tile_m, wg_tile_n)
+    sg_tile = (sg_tile_m, sg_tile_n)
+    load_tile_a = (load_tile_a_m, load_tile_a_k)
+    load_tile_b = (load_tile_b_k, load_tile_b_n)
+    prefetch_tile_a = (prefetch_tile_a_m, prefetch_tile_a_k)
+    prefetch_tile_b = (prefetch_tile_b_k, prefetch_tile_b_n)
+
+    try:
+        check_wg_tile(M, N, wg_tile)
+        check_sg_tile(wg_tile, sg_tile, gpu_specs, min_nb_threads=MIN_NB_THREADS)
+        check_k_tile(K, k_tile)
+        check_load_tile_a(load_tile_a, sg_tile, k_tile)
+        check_load_tile_b(load_tile_b, sg_tile, k_tile)
+        check_prefetch_tile_a(
+            prefetch_tile_a, wg_tile, k_tile, gpu_specs, verbose=verbose
+        )
+        check_prefetch_tile_b(
+            prefetch_tile_b, wg_tile, k_tile, gpu_specs, verbose=verbose
+        )
+    except ValueError as e:
+        if verbose:
+            print(f"Invalid configuration: {e}")
+        return False
+    return True
+
+
+def get_int_factors(n):
+    "Return a and b such that n = a * b."
+    factors = []
+    for i in range(1, int(math.sqrt(n)) + 1):
+        if n % i == 0:
+            a = i
+            b = n // i
+            factors.append((a, b))
+            factors.append((b, a))
+    # sort by how close to square the factors are
+    factors.sort(key=lambda x: abs(x[0] - x[1]))
+    return factors
 
 
 def generate_prefetch_tiles(wg_tile, k_tile, gpu_specs, n=None):
@@ -262,27 +223,26 @@ def generate_prefetch_tiles(wg_tile, k_tile, gpu_specs, n=None):
     return prefetch_tiles_a, prefetch_tiles_b
 
 
-def generate_load_tiles(min_rows=8, min_cols=8):
-    # FIXME load tile must divide sg_tile and k tile
+def generate_load_tiles(check_func: callable, sg_tile, k_tile):
     load_elems = [8, 16, 32]
     load_tiles = []
     for a, b in product(load_elems, load_elems):
-        if (
-            a >= min_rows
-            and a <= LOAD_MAX_ROWS
-            and b >= min_cols
-            and b <= LOAD_MAX_COLS
-        ):
-            load_tiles.append((a, b))
+        tile = (a, b)
+        try:
+            check_func(tile, sg_tile, k_tile)
+            load_tiles.append(tile)
+        except ValueError:
+            pass
+
     return load_tiles
 
 
-def generate_load_tiles_a():
-    return generate_load_tiles(min_rows=DPAS.A_TILE[0], min_cols=DPAS.A_TILE[1])
+def generate_load_tiles_a(sg_tile, k_tile):
+    return generate_load_tiles(check_prefetch_tile_a, sg_tile, k_tile)
 
 
-def generate_load_tiles_b():
-    return generate_load_tiles(min_rows=DPAS.B_TILE[0], min_cols=DPAS.B_TILE[1])
+def generate_load_tiles_b(sg_tile, k_tile):
+    return generate_load_tiles(check_prefetch_tile_b, sg_tile, k_tile)
 
 
 def estimate_perf(
@@ -446,7 +406,7 @@ def generate_configs(
     load_strategy="dpas",
     pf_strategy="best",
     max_nb_configs=None,
-):
+) -> list[tuple[float, dict]]:
     """Generate valid tile size configurations based on the selection strategy.
 
     perf_threshold: if set, only return configurations with
@@ -552,9 +512,11 @@ def expand_configs_with_load_tiles(
     """Expand the parameter configs with different load tile options."""
     expanded_configs = []
     for params in param_list:
+        sg_tile = (params["sg_m"], params["sg_n"])
+        k_tile = params["k_tile"]
         if load_strategy == "all":
-            load_a_list = generate_load_tiles_a()
-            load_b_list = generate_load_tiles_b()
+            load_a_list = generate_load_tiles_a(sg_tile, k_tile)
+            load_b_list = generate_load_tiles_b(sg_tile, k_tile)
         else:
             load_a_list = [DPAS.A_TILE]
             load_b_list = [DPAS.B_TILE]
