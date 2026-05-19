@@ -1,3 +1,8 @@
+"""
+Utilities for matrix multiplication tile size selection and performance
+estimation for XeGPU targets.
+"""
+
 from itertools import product
 from typing import Callable
 
@@ -31,7 +36,9 @@ def generate_configs(
     pf_strategy: str = "best",
     max_nb_configs: int | None = None,
 ) -> list[tuple[float, dict[str, int]]]:
-    """Generate valid tile size configurations based on the selection strategy.
+    """Generate valid tile size configurations for (M, N, K) matrix multiplication.
+
+    gpu_specs: XeGPUSpecs object containing the target GPU specifications.
 
     perf_threshold: if set, only return configurations with
     estimated_perf >= perf_threshold * max_found_estimated_perf.
