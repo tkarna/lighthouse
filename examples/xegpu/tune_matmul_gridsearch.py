@@ -17,7 +17,7 @@ from lighthouse.execution.runner import Runner
 from lighthouse.schedule.xegpu.mlp_schedule import DPAS
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.schedule.xegpu import check_constraints
-from lighthouse.schedule.xegpu.xegpu_devices import get_gpu_specs
+from lighthouse.schedule.xegpu import XeGPUSpecs
 
 from matmul import XeGPUMatMul, check_results, cli_parser
 from genetic_algorithm import (
@@ -114,7 +114,7 @@ def divisible_by(a_list: list, b: int) -> list:
 
 
 def construct_search_space(
-    M: int, N: int, K: int, gpu_specs: dict = None
+    M: int, N: int, K: int, gpu_specs: XeGPUSpecs
 ) -> tuple[VariableSet, callable]:
     wg_tile_lim_m = min(max(M // 4, 16), 64), min(M, 256)
     wg_tile_lim_n = min(max(N // 4, 16), 64), min(N, 256)
@@ -218,10 +218,11 @@ if __name__ == "__main__":
         csv_file = "out_gridsearch.csv"
         csv_logger = CSVLogger(csv_file)
 
-    gpu_specs = get_gpu_specs(args.target)
+    gpu_specs = XeGPUSpecs.get(args.target)
 
     var_set, sample_to_dict = construct_search_space(*sizes, gpu_specs=gpu_specs)
     print(f"Matmul problem size: {sizes}")
+    print(f"device={gpu_specs.name}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
     print(f"{has_bias=}")

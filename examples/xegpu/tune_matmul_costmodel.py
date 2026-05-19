@@ -14,7 +14,7 @@ from lighthouse.schedule.xegpu.xegpu_costmodel import (
     expand_configs_with_load_tiles,
     expand_configs_with_prefetch_depth,
 )
-from lighthouse.schedule.xegpu.xegpu_devices import get_gpu_specs
+from lighthouse.schedule.xegpu import XeGPUSpecs
 
 if __name__ == "__main__":
     parser = cli_parser(
@@ -71,10 +71,10 @@ if __name__ == "__main__":
         csv_file = "out_costmodel.csv"
         csv_logger = CSVLogger(csv_file)
 
-    gpu_specs = get_gpu_specs(args.target)
+    gpu_specs = XeGPUSpecs.get(args.target)
 
     print(f"Matmul problem size: {sizes}")
-    print(f"device={gpu_specs['name']}")
+    print(f"device={gpu_specs.name}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
     print(f"{has_bias=}")

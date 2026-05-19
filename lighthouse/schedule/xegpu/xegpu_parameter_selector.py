@@ -5,7 +5,7 @@ Utility to choose matmul tile size parameters for XeGPU targets.
 import json
 from pathlib import Path
 from .xegpu_costmodel import generate_configs
-from .xegpu_devices import gpu_specs_db
+from .xegpu_specs import XeGPUSpecs
 
 DEFAULT_JSON_FILE = str(Path(__file__).parent / "matmul_params.json")
 
@@ -34,7 +34,7 @@ class XeGPUParameterSelector:
         if shape not in self.matmul_param_db:
             try:
                 # Use cost model to generate tile sizes and take first config
-                gpu_specs = gpu_specs_db[self.device]
+                gpu_specs = XeGPUSpecs.get(self.device)
                 configs = generate_configs(m, n, k, gpu_specs, max_nb_configs=1)
                 params = configs[0][1]
                 return params

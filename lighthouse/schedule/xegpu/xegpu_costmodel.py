@@ -1,5 +1,6 @@
 from itertools import product
 
+from .xegpu_specs import XeGPUSpecs
 from .xegpu_constraints import (
     check_constraints,
     check_wg_tile,
@@ -23,7 +24,7 @@ def generate_configs(
     M,
     N,
     K,
-    gpu_specs,
+    gpu_specs: XeGPUSpecs,
     perf_threshold=None,
     load_strategy="dpas",
     pf_strategy="best",
@@ -123,7 +124,10 @@ def generate_configs(
 
 
 def expand_configs_with_load_tiles(
-    param_list, gpu_specs, load_strategy="dpas", exclude_duplicates=False
+    param_list,
+    gpu_specs: XeGPUSpecs,
+    load_strategy="dpas",
+    exclude_duplicates=False,
 ):
     """
     Expand the parameter configs with different load tile options.
@@ -166,7 +170,10 @@ def expand_configs_with_load_tiles(
 
 
 def expand_configs_with_prefetch_depth(
-    param_list, gpu_specs, max_depth=2, exclude_duplicates=False
+    param_list,
+    gpu_specs: XeGPUSpecs,
+    max_depth=2,
+    exclude_duplicates=False,
 ):
     """
     Expand the parameter configs with different prefetch depth options.
@@ -197,7 +204,12 @@ def expand_configs_with_prefetch_depth(
     return expanded_configs
 
 
-def generate_prefetch_tiles(wg_tile, k_tile, gpu_specs, n=None):
+def generate_prefetch_tiles(
+    wg_tile,
+    k_tile,
+    gpu_specs: XeGPUSpecs,
+    n=None,
+):
     """Generates valid prefetch tile sizes for A and B.
 
     Candidates are sorted by number of threads (descending) and then by how
@@ -265,7 +277,7 @@ def estimate_performance(
     wg_tile,
     sg_tile,
     k_tile,
-    gpu_specs,
+    gpu_specs: XeGPUSpecs,
     prefetch_tile_a=None,
     prefetch_tile_b=None,
     verbose=True,
@@ -294,9 +306,7 @@ def estimate_performance(
     # WG
     if verbose:
         print("=== Workgroup Level ===")
-    roofline_threshold = (
-        gpu_specs["peak_flops"] / gpu_specs["bw_global_mem"]
-    )  # in FLOPs/Byte
+    roofline_threshold = gpu_specs.peak_flops / gpu_specs.bw_global_mem  # in FLOPs/Byte
 
     wg_grid = check_wg_tile(M, N, wg_tile)
     check_k_tile(K, k_tile)
@@ -336,15 +346,15 @@ def estimate_performance(
         else:
             print(" => Compute-bound regime")
 
-    xe_core_utilization = min(nb_wgs / gpu_specs["nb_xe_cores"], 1.0)
+    xe_core_utilization = min(nb_wgs / gpu_specs.nb_xe_cores, 1.0)
     if verbose:
         print(f"XE core utilization: {xe_core_utilization:.2f}")
 
     # predict flops
     peak_flops = (
-        gpu_specs["peak_flops"] * xe_core_utilization
+        gpu_specs.peak_flops * xe_core_utilization
     )  # possible under-utilization
-    predicted_throughput = min(peak_flops, ai * gpu_specs["bw_global_mem"])
+    predicted_throughput = min(peak_flops, ai * gpu_specs.bw_global_mem)
     if verbose:
         print(f"Predicted throughput: {predicted_throughput / 1e12:.2f} TFLOPS")
 
@@ -382,9 +392,9 @@ def estimate_performance(
         print(f"Number of total DPAS ops: {nb_dpas_ops}")
 
     # FIXME move remaining checks to util funcs
-    if nb_parallel_dpas > gpu_specs["dpas_exec_size"]:
+    if nb_parallel_dpas > gpu_specs.dpas_exec_size:
         raise ValueError(
-            f"Number of parallel DPAS ops ({nb_parallel_dpas}) exceeds hardware execution size ({gpu_specs['dpas_exec_size']})."
+            f"Number of parallel DPAS ops ({nb_parallel_dpas}) exceeds hardware execution size ({gpu_specs.dpas_exec_size})."
         )
 
     # estimate number of used registers
@@ -393,9 +403,9 @@ def estimate_performance(
     if verbose:
         print(f"Number of registers: {nb_reg}")
 
-    if nb_reg > gpu_specs["nb_registers"]:
+    if nb_reg > gpu_specs.nb_registers:
         raise ValueError(
-            f"Number of registers ({nb_reg}) exceeds hardware register file size ({gpu_specs['nb_registers']})."
+            f"Number of registers ({nb_reg}) exceeds hardware register file size ({gpu_specs.nb_registers})."
         )
 
     if prefetch_tile_a:

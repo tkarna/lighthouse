@@ -1,5 +1,7 @@
 from collections import namedtuple
 
+from .xegpu_specs import XeGPUSpecs
+
 # hardware constraints
 DPAS = namedtuple("DPAS", ["M", "N", "K", "A_TILE", "B_TILE", "C_TILE"])(
     8, 16, 16, (8, 16), (16, 16), (8, 16)
@@ -29,7 +31,7 @@ def check_wg_tile(M: int, N: int, wg_tile: tuple[int, int]) -> tuple[int, int]:
 def check_sg_tile(
     wg_tile: tuple[int, int],
     sg_tile: tuple[int, int],
-    gpu_specs: dict,
+    gpu_specs: XeGPUSpecs,
     min_nb_threads=None,
 ) -> tuple[int, int]:
     if wg_tile[0] % sg_tile[0] != 0:
@@ -43,7 +45,7 @@ def check_sg_tile(
     nb_sg_threads_m = wg_tile[0] // sg_tile[0]
     nb_sg_threads_n = wg_tile[1] // sg_tile[1]
     nb_sg_threads = nb_sg_threads_m * nb_sg_threads_n
-    if nb_sg_threads > gpu_specs["max_nb_threads"]:
+    if nb_sg_threads > gpu_specs.max_nb_threads:
         raise ValueError("too many sg threads")
     if min_nb_threads is not None and nb_sg_threads < min_nb_threads:
         raise ValueError("too few sg threads")
@@ -89,7 +91,12 @@ def check_load_tile_b(tile, sg_tile, k_tile):
 
 
 def check_prefetch_tile(
-    tile, data_shape, gpu_specs, name="A", min_nb_threads=None, verbose=False
+    tile,
+    data_shape,
+    gpu_specs: XeGPUSpecs,
+    name="A",
+    min_nb_threads=None,
+    verbose=False,
 ):
     if tile[0] < PFETCH_MIN_ROWS:
         raise ValueError(
@@ -117,9 +124,9 @@ def check_prefetch_tile(
     if verbose:
         print(f"=== Prefetch {name} ===")
         print(f"tile size {tile}, grid size ({rows}, {cols}), {nb_threads} threads")
-    if nb_threads > gpu_specs["max_nb_threads"]:
+    if nb_threads > gpu_specs.max_nb_threads:
         raise ValueError(
-            f"Number of threads for {name} prefetch ({nb_threads}) exceeds max threads ({gpu_specs['max_nb_threads']})."
+            f"Number of threads for {name} prefetch ({nb_threads}) exceeds max threads ({gpu_specs.max_nb_threads})."
         )
     if min_nb_threads is not None and nb_threads < min_nb_threads:
         raise ValueError(
@@ -129,7 +136,12 @@ def check_prefetch_tile(
 
 
 def check_prefetch_tile_a(
-    tile, wg_tile, k_tile, gpu_specs, min_nb_threads=None, verbose=False
+    tile,
+    wg_tile,
+    k_tile,
+    gpu_specs: XeGPUSpecs,
+    min_nb_threads=None,
+    verbose=False,
 ):
     data_shape = (wg_tile[0], k_tile)
     return check_prefetch_tile(
@@ -143,7 +155,12 @@ def check_prefetch_tile_a(
 
 
 def check_prefetch_tile_b(
-    tile, wg_tile, k_tile, gpu_specs, min_nb_threads=None, verbose=False
+    tile,
+    wg_tile,
+    k_tile,
+    gpu_specs: XeGPUSpecs,
+    min_nb_threads=None,
+    verbose=False,
 ):
     data_shape = (k_tile, wg_tile[1])
     return check_prefetch_tile(
@@ -156,7 +173,11 @@ def check_prefetch_tile_b(
     )
 
 
-def check_constraints(params: dict, gpu_specs: dict, verbose: bool = False) -> bool:
+def check_constraints(
+    params: dict,
+    gpu_specs: XeGPUSpecs,
+    verbose: bool = False,
+) -> bool:
     """Check that the given tile size configuration is valid."""
 
     M = params["m"]
