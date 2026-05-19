@@ -16,7 +16,7 @@ from lighthouse import dialects as lh_dialects
 from lighthouse.execution.runner import Runner
 from lighthouse.schedule.xegpu.mlp_schedule import DPAS
 from lighthouse.pipeline.driver import TransformDriver
-from lighthouse.schedule.xegpu.xegpu_costmodel import check_constraints
+from lighthouse.schedule.xegpu import check_constraints
 from lighthouse.schedule.xegpu.xegpu_devices import get_gpu_specs
 
 from matmul import XeGPUMatMul, check_results, cli_parser
