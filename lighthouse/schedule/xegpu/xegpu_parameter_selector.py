@@ -39,24 +39,24 @@ def load_param_database(json_file: str = DEFAULT_JSON_FILE) -> dict:
     return matmul_param_db
 
 
-matmul_param_db = load_param_database()
+class XeGPUParameterSelector:
+    def __init__(self, json_file: str = DEFAULT_JSON_FILE):
+        self.matmul_param_db = load_param_database(json_file)
 
+    def get_parameters(self, m: int, n: int, k: int) -> dict:
+        shape = (m, n, k)
+        if shape not in self.matmul_param_db:
+            if m >= 128 and n >= 256 and k >= 64:
+                params = DEFAULT_PARAMS.copy()
+                params["m"] = m
+                params["n"] = n
+                params["k"] = k
+                return params
+            else:
+                raise ValueError(
+                    f"Parameter selector: No parameters found for matmul shape {shape}"
+                )
+        return self.matmul_param_db[shape]
 
-def get_matmul_parameters(m: int, n: int, k: int) -> list:
-    shape = (m, n, k)
-    if shape not in matmul_param_db:
-        if m >= 128 and n >= 256 and k >= 64:
-            params = DEFAULT_PARAMS.copy()
-            params["m"] = m
-            params["n"] = n
-            params["k"] = k
-            return params
-        else:
-            raise ValueError(
-                f"Parameter selector: No parameters found for matmul shape {shape}"
-            )
-    return matmul_param_db[shape]
-
-
-def get_parameters_for_layers(shapes: list[tuple[int, int, int]]) -> list:
-    return [get_matmul_parameters(*shape) for shape in shapes]
+    def get_parameters_for_layers(self, shapes: list[tuple[int, int, int]]) -> list:
+        return [self.get_parameters(*shape) for shape in shapes]

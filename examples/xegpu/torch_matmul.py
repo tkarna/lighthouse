@@ -20,10 +20,12 @@ from lighthouse import dialects as lh_dialects
 from lighthouse import schedule as lh_schedule
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.utils.mlir import get_mlir_library_path
-from lighthouse.schedule.xegpu import mlp_schedule, xegpu_to_binary
+from lighthouse.schedule.xegpu import (
+    mlp_schedule,
+    xegpu_to_binary,
+    XeGPUParameterSelector,
+)
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
-
-import parameter_selector
 
 
 class Model(nn.Module):
@@ -183,8 +185,9 @@ enabled via CLI arguments.
     # Problem size
     m, n, k = args.sizes if args.sizes else (4096, 4096, 4096)
     # Get default parameters from the database
+    parameter_selector = XeGPUParameterSelector()
     try:
-        params = parameter_selector.get_matmul_parameters(m, n, k)
+        params = parameter_selector.get_parameters(m, n, k)
     except ValueError:
         # Initialize with a stub and assume the rest will be populated
         params = {

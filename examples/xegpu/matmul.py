@@ -29,7 +29,7 @@ from lighthouse.execution import (
 from lighthouse.schedule.xegpu import mlp_schedule, xegpu_to_binary
 from lighthouse.utils.numpy import mlir_to_numpy_dtype
 from lighthouse.ingress.mlir_gen import generate_gpu_matmul_payload, get_mlir_elem_type
-from lighthouse.schedule.xegpu import xegpu_parameter_selector
+from lighthouse.schedule.xegpu import XeGPUParameterSelector
 
 
 def matmul_complexity(
@@ -371,8 +371,9 @@ enabled via CLI arguments.
     # Problem size
     m, n, k = args.sizes if args.sizes else (4096, 4096, 4096)
     # Get default parameters from the database
+    parameter_selector = XeGPUParameterSelector()
     try:
-        params = xegpu_parameter_selector.get_matmul_parameters(m, n, k)
+        params = parameter_selector.get_parameters(m, n, k)
     except ValueError:
         # Initialize with a stub and assume the rest will be populated
         params = {
