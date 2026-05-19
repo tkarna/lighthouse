@@ -17,6 +17,7 @@ from lighthouse.execution.runner import Runner
 from lighthouse.schedule.xegpu.mlp_schedule import DPAS
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.schedule.xegpu.xegpu_costmodel import check_constraints
+from lighthouse.schedule.xegpu.xegpu_devices import get_gpu_specs
 
 from matmul import XeGPUMatMul, check_results, cli_parser
 from genetic_algorithm import (
@@ -112,7 +113,9 @@ def divisible_by(a_list: list, b: int) -> list:
     return [a for a in a_list if a % b == 0]
 
 
-def construct_search_space(M: int, N: int, K: int):
+def construct_search_space(
+    M: int, N: int, K: int, gpu_specs: dict = None
+) -> tuple[VariableSet, callable]:
     wg_tile_lim_m = min(max(M // 4, 16), 64), min(M, 256)
     wg_tile_lim_n = min(max(N // 4, 16), 64), min(N, 256)
     sg_tile_lim_m = min(max(M // 8, 16), 32), min(M, 128)
@@ -129,7 +132,7 @@ def construct_search_space(M: int, N: int, K: int):
     def sample_is_valid(sample_params, verbose=False):
         params = {"m": M, "n": N, "k": K}
         params.update(sample_params)
-        return check_constraints(params, verbose=verbose)
+        return check_constraints(params, gpu_specs, verbose=verbose)
 
     var_set = VariableSet(
         [
@@ -168,6 +171,12 @@ if __name__ == "__main__":
         "--dry-run",
         action="store_true",
         help="Check validity of combinations but do not execute kernels.",
+    )
+    parser.add_argument(
+        "--target",
+        choices=["B70", "B580"],
+        default="B70",
+        help="Target GPU device.",
     )
     parser.add_argument(
         "--max-iters",
@@ -209,7 +218,9 @@ if __name__ == "__main__":
         csv_file = "out_gridsearch.csv"
         csv_logger = CSVLogger(csv_file)
 
-    var_set, sample_to_dict = construct_search_space(*sizes)
+    gpu_specs = get_gpu_specs(args.target)
+
+    var_set, sample_to_dict = construct_search_space(*sizes, gpu_specs=gpu_specs)
     print(f"Matmul problem size: {sizes}")
     print(f"{ab_type=}")
     print(f"{c_type=}")
@@ -224,7 +235,7 @@ if __name__ == "__main__":
     tic = perf_counter()
     for sample in product(*var_set.iterables()):
         params = sample_to_dict(sample)
-        if not check_constraints(params, verbose=False):
+        if not check_constraints(params, gpu_specs, verbose=False):
             continue
 
         i += 1

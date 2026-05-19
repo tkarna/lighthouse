@@ -8,14 +8,13 @@ from csv_logger import CSVLogger
 
 from matmul import cli_parser
 from tune_utils import dump_configs_json, execute_and_log
-from tilesize_selector import (
+from tune_matmul_gridsearch import run_experiment
+from lighthouse.schedule.xegpu.xegpu_costmodel import (
     generate_configs,
-    gpu_specs_db,
     expand_configs_with_load_tiles,
     expand_configs_with_prefetch_depth,
 )
-from tune_matmul_gridsearch import check_constraints, run_experiment
-
+from lighthouse.schedule.xegpu.xegpu_devices import get_gpu_specs
 
 if __name__ == "__main__":
     parser = cli_parser(
@@ -72,7 +71,7 @@ if __name__ == "__main__":
         csv_file = "out_costmodel.csv"
         csv_logger = CSVLogger(csv_file)
 
-    gpu_specs = gpu_specs_db[args.target]
+    gpu_specs = get_gpu_specs(args.target)
 
     print(f"Matmul problem size: {sizes}")
     print(f"device={gpu_specs['name']}")
@@ -108,10 +107,6 @@ if __name__ == "__main__":
         executed_configs = []
         tic = perf_counter()
         for params in configs:
-            if not check_constraints(params, verbose=True):
-                print(f"Skipping invalid configuration: {params}")
-                continue
-
             i += 1
             if args.max_iters is not None and i >= args.max_iters:
                 print(f"Reached maximum number of iterations: {args.max_iters}")
@@ -159,7 +154,7 @@ if __name__ == "__main__":
         print(f"Tuning load tiles for best {nb_select_load_tune} configurations")
         configs = [c[1] for c in executed_configs[:nb_select_load_tune]]
         new_configs = expand_configs_with_load_tiles(
-            configs, load_strategy="all", exclude_duplicates=True
+            configs, gpu_specs, load_strategy="all", exclude_duplicates=True
         )
 
         executed_configs2, time2, iters2 = eval_configs(new_configs)
@@ -186,7 +181,7 @@ if __name__ == "__main__":
         print(f"Tuning prefetch depth for best {nb_select_pfnb_tune} configurations")
         configs = [c[1] for c in executed_configs[:nb_select_pfnb_tune]]
         new_configs = expand_configs_with_prefetch_depth(
-            configs, max_depth=2, exclude_duplicates=True
+            configs, gpu_specs, max_depth=2, exclude_duplicates=True
         )
 
         executed_configs2, time2, iters2 = eval_configs(new_configs)

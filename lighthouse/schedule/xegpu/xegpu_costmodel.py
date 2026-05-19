@@ -114,17 +114,39 @@ def check_prefetch_tile(
         raise ValueError(
             f"Number of threads for {name} prefetch ({nb_threads}) exceeds max threads ({gpu_specs['max_nb_threads']})."
         )
+    if min_nb_threads is not None and nb_threads < min_nb_threads:
+        raise ValueError(
+            f"Number of threads for {name} prefetch ({nb_threads}) is less than minimum threads ({min_nb_threads})."
+        )
     return rows, cols
 
 
-def check_prefetch_tile_a(tile, wg_tile, k_tile, gpu_specs, verbose=False):
+def check_prefetch_tile_a(
+    tile, wg_tile, k_tile, gpu_specs, min_nb_threads=None, verbose=False
+):
     data_shape = (wg_tile[0], k_tile)
-    return check_prefetch_tile(tile, data_shape, gpu_specs, name="A", verbose=verbose)
+    return check_prefetch_tile(
+        tile,
+        data_shape,
+        gpu_specs,
+        name="A",
+        min_nb_threads=min_nb_threads,
+        verbose=verbose,
+    )
 
 
-def check_prefetch_tile_b(tile, wg_tile, k_tile, gpu_specs, verbose=False):
+def check_prefetch_tile_b(
+    tile, wg_tile, k_tile, gpu_specs, min_nb_threads=None, verbose=False
+):
     data_shape = (k_tile, wg_tile[1])
-    return check_prefetch_tile(tile, data_shape, gpu_specs, name="B", verbose=verbose)
+    return check_prefetch_tile(
+        tile,
+        data_shape,
+        gpu_specs,
+        name="B",
+        min_nb_threads=min_nb_threads,
+        verbose=verbose,
+    )
 
 
 def check_constraints(params: dict, gpu_specs: dict, verbose: bool = False) -> bool:
@@ -161,10 +183,20 @@ def check_constraints(params: dict, gpu_specs: dict, verbose: bool = False) -> b
         check_load_tile_a(load_tile_a, sg_tile, k_tile)
         check_load_tile_b(load_tile_b, sg_tile, k_tile)
         check_prefetch_tile_a(
-            prefetch_tile_a, wg_tile, k_tile, gpu_specs, verbose=verbose
+            prefetch_tile_a,
+            wg_tile,
+            k_tile,
+            gpu_specs,
+            min_nb_threads=MIN_NB_THREADS,
+            verbose=verbose,
         )
         check_prefetch_tile_b(
-            prefetch_tile_b, wg_tile, k_tile, gpu_specs, verbose=verbose
+            prefetch_tile_b,
+            wg_tile,
+            k_tile,
+            gpu_specs,
+            min_nb_threads=MIN_NB_THREADS,
+            verbose=verbose,
         )
     except ValueError as e:
         if verbose:
@@ -238,11 +270,11 @@ def generate_load_tiles(check_func: callable, sg_tile, k_tile):
 
 
 def generate_load_tiles_a(sg_tile, k_tile):
-    return generate_load_tiles(check_prefetch_tile_a, sg_tile, k_tile)
+    return generate_load_tiles(check_load_tile_a, sg_tile, k_tile)
 
 
 def generate_load_tiles_b(sg_tile, k_tile):
-    return generate_load_tiles(check_prefetch_tile_b, sg_tile, k_tile)
+    return generate_load_tiles(check_load_tile_b, sg_tile, k_tile)
 
 
 def estimate_perf(
@@ -487,7 +519,7 @@ def generate_configs(
             ):
                 c = (wg_tile, sg_tile, k_tile, la, lb, pa, pb)
                 params = tuple_to_param_dict(M, N, K, c)
-                if check_constraints(params, verbose=False):
+                if check_constraints(params, gpu_specs, verbose=False):
                     valid_configs.append((perf, params))
         except ValueError:
             pass
@@ -507,7 +539,7 @@ def generate_configs(
 
 
 def expand_configs_with_load_tiles(
-    param_list, load_strategy="dpas", exclude_duplicates=False
+    param_list, gpu_specs, load_strategy="dpas", exclude_duplicates=False
 ):
     """Expand the parameter configs with different load tile options."""
     expanded_configs = []
@@ -528,7 +560,7 @@ def expand_configs_with_load_tiles(
             new_params["load_b_k"] = lb[0]
             new_params["load_b_n"] = lb[1]
             if (
-                check_constraints(new_params, verbose=False)
+                check_constraints(new_params, gpu_specs, verbose=False)
                 and new_params not in expanded_configs
                 and (not exclude_duplicates or new_params not in param_list)
             ):
@@ -538,7 +570,7 @@ def expand_configs_with_load_tiles(
 
 
 def expand_configs_with_prefetch_depth(
-    param_list, max_depth=2, exclude_duplicates=False
+    param_list, gpu_specs, max_depth=2, exclude_duplicates=False
 ):
     """Expand the parameter configs with different prefetch depth options."""
     pf_depth_list = list(range(1, max_depth + 1))
@@ -550,7 +582,7 @@ def expand_configs_with_prefetch_depth(
             new_params["prefetch_a_nb"] = a
             new_params["prefetch_b_nb"] = b
             if (
-                check_constraints(new_params, verbose=False)
+                check_constraints(new_params, gpu_specs, verbose=False)
                 and new_params not in expanded_configs
                 and (not exclude_duplicates or new_params not in param_list)
             ):
