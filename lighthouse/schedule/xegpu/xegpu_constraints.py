@@ -17,11 +17,13 @@ MAX_NB_SG_THREADS = 32  # 32 for large register file, 16 otherwise
 MIN_NB_THREADS = 16
 
 
-def check_wg_tile(M: int, N: int, wg_tile: tuple[int, int]):
+def check_wg_tile(M: int, N: int, wg_tile: tuple[int, int]) -> tuple[int, int]:
     if M % wg_tile[0] != 0:
         raise ValueError("wg_tile_m does not divide M")
     if N % wg_tile[1] != 0:
         raise ValueError("wg_tile_n does not divide N")
+    wg_grid = (M // wg_tile[0], N // wg_tile[1])
+    return wg_grid
 
 
 def check_sg_tile(
@@ -29,7 +31,7 @@ def check_sg_tile(
     sg_tile: tuple[int, int],
     gpu_specs: dict,
     min_nb_threads=None,
-):
+) -> tuple[int, int]:
     if wg_tile[0] % sg_tile[0] != 0:
         raise ValueError("sg_tile_m does not divide wg_tile_m")
     if wg_tile[1] % sg_tile[1] != 0:
@@ -45,6 +47,7 @@ def check_sg_tile(
         raise ValueError("too many sg threads")
     if min_nb_threads is not None and nb_sg_threads < min_nb_threads:
         raise ValueError("too few sg threads")
+    return nb_sg_threads_m, nb_sg_threads_n
 
 
 def check_k_tile(K: int, k_tile: int):

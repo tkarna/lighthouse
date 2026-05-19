@@ -1,8 +1,10 @@
 from itertools import product
-import math
 
 from .xegpu_constraints import (
     check_constraints,
+    check_wg_tile,
+    check_sg_tile,
+    check_k_tile,
     check_load_tile_a,
     check_load_tile_b,
     check_prefetch_tile_a,
@@ -15,20 +17,6 @@ from .xegpu_constraints import (
     PFETCH_MIN_COLS,
     PFETCH_MAX_COLS,
 )
-
-
-def get_int_factors(n):
-    "Return a and b such that n = a * b."
-    factors = []
-    for i in range(1, int(math.sqrt(n)) + 1):
-        if n % i == 0:
-            a = i
-            b = n // i
-            factors.append((a, b))
-            factors.append((b, a))
-    # sort by how close to square the factors are
-    factors.sort(key=lambda x: abs(x[0] - x[1]))
-    return factors
 
 
 def generate_prefetch_tiles(wg_tile, k_tile, gpu_specs, n=None):
@@ -102,7 +90,6 @@ def estimate_perf(
     verbose=True,
 ):
     """Estimate the performance of the given tile size configuration."""
-    # NOTE this is basically just constraint checking with the roofline model...
     if verbose:
         print("=== Global Level ===")
         print(f"Matrix sizes: M={M}, N={N}, K={K}")
@@ -118,8 +105,8 @@ def estimate_perf(
         gpu_specs["peak_flops"] / gpu_specs["bw_global_mem"]
     )  # in FLOPs/Byte
 
-    # TODO refactor to get_wg_grid util with constraint checks
-    wg_grid = (M // wg_tile[0], N // wg_tile[1])
+    wg_grid = check_wg_tile(M, N, wg_tile)
+    check_k_tile(K, k_tile)
     nb_wgs = wg_grid[0] * wg_grid[1]
     if verbose:
         print(f"Workgroup tile size: {wg_tile}, grid size: {wg_grid}, nb WGs: {nb_wgs}")
@@ -175,17 +162,11 @@ def estimate_perf(
     if verbose:
         print("=== Subgroup Level ===")
 
-    # TODO refactor to compute_sg_grid util with constraint checks
-    sg_grid = (wg_tile[0] // sg_tile[0], wg_tile[1] // sg_tile[1])
+    sg_grid = check_sg_tile(wg_tile, sg_tile, gpu_specs)
     nb_sgs = sg_grid[0] * sg_grid[1]
     if verbose:
         print(
             f"Subgroup tile size: {sg_tile}, grid size: {sg_grid}, nb SGs per WG: {nb_sgs}"
-        )
-
-    if nb_sgs > gpu_specs["max_nb_threads"]:
-        raise ValueError(
-            f"Number of SGs ({nb_sgs}) exceeds max threads ({gpu_specs['max_nb_threads']})."
         )
 
     A_sg_shape = (sg_tile[0], k_tile)
@@ -210,6 +191,7 @@ def estimate_perf(
     if verbose:
         print(f"Number of total DPAS ops: {nb_dpas_ops}")
 
+    # FIXME move remaining checks to util funcs
     if nb_parallel_dpas > gpu_specs["dpas_exec_size"]:
         raise ValueError(
             f"Number of parallel DPAS ops ({nb_parallel_dpas}) exceeds hardware execution size ({gpu_specs['dpas_exec_size']})."
