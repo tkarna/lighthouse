@@ -19,7 +19,7 @@ from lighthouse.schedule import schedule_boilerplate
 from lighthouse.dialects import smt_ext
 from lighthouse.dialects.transform import smt_ext as td_smt_ext
 from lighthouse.dialects.transform.tune_ext import knob, KnobValue
-from lighthouse.schedule.xegpu.xegpu_constraints import (
+from lighthouse.schedule.xegpu.matmul_constraints import (
     DPAS,
     PREFETCH_INST_DATA,
     NB_WORKITEMS,

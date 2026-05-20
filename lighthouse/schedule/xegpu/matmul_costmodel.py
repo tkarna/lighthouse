@@ -7,7 +7,7 @@ from itertools import product
 from typing import Callable
 
 from .xegpu_specs import XeGPUSpecs
-from .xegpu_constraints import (
+from .matmul_constraints import (
     check_constraints,
     check_wg_tile,
     check_sg_tile,
@@ -17,7 +17,7 @@ from .xegpu_constraints import (
     check_prefetch_tile_a,
     check_prefetch_tile_b,
 )
-from .xegpu_constraints import (
+from .matmul_constraints import (
     DPAS,
     PFETCH_MIN_ROWS,
     PFETCH_MAX_ROWS,
