@@ -9,7 +9,7 @@ from csv_logger import CSVLogger
 from matmul import cli_parser
 from tune_utils import dump_configs_json, execute_and_log
 from tune_matmul_gridsearch import run_experiment
-from lighthouse.schedule.xegpu.xegpu_costmodel import (
+from lighthouse.schedule.xegpu.matmul_costmodel import (
     generate_configs,
     expand_configs_with_load_tiles,
     expand_configs_with_prefetch_depth,

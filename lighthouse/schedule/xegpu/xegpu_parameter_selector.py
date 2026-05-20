@@ -4,7 +4,7 @@ Utility to choose matmul tile size parameters for XeGPU targets.
 
 import json
 from pathlib import Path
-from .xegpu_costmodel import generate_configs
+from .matmul_costmodel import generate_configs
 from .xegpu_specs import XeGPUSpecs
 
 DEFAULT_JSON_FILE = str(Path(__file__).parent / "matmul_params.json")
