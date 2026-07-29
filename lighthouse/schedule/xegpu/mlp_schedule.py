@@ -537,10 +537,8 @@ def xegpu_wg_annotation_for_mlp_layer(
     xegpu.set_anchor_layout(store_op_c, **output_layout)
 
     # annotate the 1d load of the broadcast op with a slice layout
-    # NOTE assumes that xegpu.load is followed by vector.broadcast
-    maybe_bcast_load = match(gpu_func, ops={"xegpu.load"})
-    load_user = transform.get_consumers_of_result(anytype, maybe_bcast_load, 0)
-    bcast_ops = transform.select(anytype, load_user, "vector.broadcast")
+    # NOTE assumes that vector.broadcast ops are associated with a xegpu.load_nd op
+    bcast_ops = match(gpu_func, ops={"vector.broadcast"})
     with lh_transform.foreach(bcast_ops) as bcast_op:
         bcast_load = xegpu.get_load_op(transform.get_operand(anyvalue, bcast_op, [0]))
         xegpu.set_anchor_layout(bcast_load, index=0, **output_layout, slice_dims=[0])
