@@ -166,8 +166,9 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
         schedule_params = [layer_params]
         schedule_kind = "elemwise"
     elif len(elemwise) > 0 and len(reduction) > 0:
-        # elemwise + reduction kernel, e.g. softmax or layer norm
         shape = elemwise[-1]["shape"]
+
+        # compute flops and read/write bytes
         res_elemtype = elemwise[-1]["elemtype"]
         # Note this is scaled by factor in the flop scaling dict
         total_flops = int(np.prod(shape))
@@ -175,26 +176,38 @@ def infer_parameters(mod: ir.Module, verbose: int = 0) -> tuple[dict, str, list[
         read_bytes = int(np.prod(shape)) * res_bytes
         write_bytes = int(np.prod(shape)) * res_bytes
 
-        layer_params = {
-            "sizes": shape,
-            "wg_rows": 64,
-            "sg_rows": 8,
-            "subgroup_size": 16,
-            "reduction_step_size": 32,
-        }
-
-        # Ensure shape is divisible by tile sizes.
-        # Padding or remainder handling is not implemented yet.
-        if shape[0] % layer_params["wg_rows"] != 0:
-            raise ValueError(
-                f"Shape {shape} dimension 0 not divisible by wg_rows={layer_params['wg_rows']}"
-            )
-        if shape[1] % layer_params["reduction_step_size"] != 0:
-            raise ValueError(
-                f"Shape {shape} dimension 1 not divisible by reduction_step_size={layer_params['reduction_step_size']}"
-            )
-        schedule_params = [layer_params]
-        schedule_kind = "reduction"
+        if len(shape) == 2:
+            # 2d elemwise + reduction kernel, e.g. softmax or layer norm
+            layer_params = {
+                "sizes": shape,
+                "wg_rows": 64,
+                "sg_rows": 8,
+                "subgroup_size": 16,
+                "reduction_step_size": 32,
+            }
+            # Ensure shape is divisible by tile sizes.
+            # Padding or remainder handling is not implemented yet.
+            if shape[0] % layer_params["wg_rows"] != 0:
+                raise ValueError(
+                    f"Shape {shape} dimension 0 not divisible by wg_rows={layer_params['wg_rows']}"
+                )
+            if shape[1] % layer_params["reduction_step_size"] != 0:
+                raise ValueError(
+                    f"Shape {shape} dimension 1 not divisible by reduction_step_size={layer_params['reduction_step_size']}"
+                )
+            schedule_params = [layer_params]
+            schedule_kind = "reduction"
+        elif len(shape) == 4:
+            # 4d elemwise + reduction kernel, e.g. rmsnorm
+            layer_params = {
+                "sizes": shape,
+                "wg_tile": [0, 0, 256, 256],
+                "sg_tile": [0, 0, 32, 32],
+                "reduction_tile": [0, 32, 0, 0],
+                "subgroup_size": 16,
+            }
+            schedule_params = [layer_params]
+            schedule_kind = "reduction"
     else:
         print("Layers:")
         for layer in layer_metadata:
