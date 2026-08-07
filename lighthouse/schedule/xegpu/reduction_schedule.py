@@ -31,20 +31,38 @@ def reduction_schedule(
     Generate transform schedule for softmax operation.
 
     The schedule performs the following transformations:
-    1. Tile the linalg.softmax operation using forall
+    1. Tiles the linalg loops for WG parallelism and reduction dimensions.
     2. Vectorize operations
     3. Bufferize tensors
     4. Convert to GPU dialect
     5. Lower to XeGPU operations
+    6. Adds XeGPU layout attributes
 
     Args:
         stop_at_stage: Optional stage name to stop early (for debugging)
         parameters: Dictionary with scheduling parameters:
-            - wg_rows: Number of rows per workgroup
-            - sg_rows: Number of rows per subgroup
-            - subgroup_size: Size of subgroup
             - sizes: Tuple with the sizes of the input tensors (e.g. (M, N))
-            - reduction_step_size: Optional step size for tiling reduction loops
+            - wg_tile: nD tile sizes for workgroup tiling
+            - sg_tile: nD tile sizes for subgroup tiling
+            - reduction_tile: nD tile sizes for reduction dimension
+            - subgroup_size: Size of subgroup (typically 16)
+
+    The `wg_tile` and `sg_tile` tile sizes determine how the problem is
+    partitioned across workgroups and subgroups. Only parallel dimensions can
+    be tiled. The `reduction_tile` size determines how the reduction dimension
+    is tiled. In both cases zero entries mean that a dimension is not tiled.
+
+    For example, if the kernel takes a 4D input tensor with shape (128, 64,
+    512, 512) and the reduction operator has iteration space ["parallel",
+    "reduction", "parallel", "parallel"], then the following parameters define
+    a valid tiling scheme:
+
+        wg_tile = [0, 0, 256, 256]  # Tile the last two parallel dims
+        sg_tile = [0, 0, 32, 32]    # Tile the last two parallel dims
+        reduction_tile = [0, 32, 0, 0]  # Tile the reduction dimension
+
+    Trailing zeros can be omitted from the tile size list, e.g., [0, 32] is
+    equivalent to [0, 32, 0, 0].
 
     Returns:
         MLIR module containing the transform schedule
@@ -88,7 +106,17 @@ def bundle_xegpu_reduction_schedule(
     if stop_at_stage == "initial":
         raise PipelineInterrupt()
 
-    reduction_step_size = parameters["reduction_step_size"]
+    # TODO validate the dimensionality of the tile sizes and reduction dimensions
+    wg_tile = parameters["wg_tile"]
+    sg_tile = parameters["sg_tile"]
+    reduction_tile = parameters["reduction_tile"]
+    subgroup_size = parameters["subgroup_size"]
+
+    # zero-pad tile sizes for easier tile size math
+    ndims = len(parameters["sizes"])
+    wg_tile = wg_tile + [0] * (ndims - len(wg_tile))
+    sg_tile = sg_tile + [0] * (ndims - len(sg_tile))
+    reduction_tile = reduction_tile + [0] * (ndims - len(reduction_tile))
 
     anytype = transform.AnyOpType.get()
 
@@ -121,7 +149,7 @@ def bundle_xegpu_reduction_schedule(
     leaf_generic = transform_ext.extract_handle(generic_ops, -1)
     _, [wg_loop], _ = lh_transform.tile(
         leaf_generic,
-        tile_sizes=(parameters["wg_rows"],),
+        tile_sizes=wg_tile,
         fuse_producers=True,
         use_forall=True,
         apply_cleanup=False,
@@ -156,11 +184,9 @@ def bundle_xegpu_reduction_schedule(
     leaf_elemwise = transform_ext.extract_handle(elemwise_ops, -1)
     reduction_ops = transform_ext.filter_reduction_ops(generic_ops)
 
-    reduction_tile_size = [0, reduction_step_size]
-
     # Tile trailing elemwise op first.
     tiled_elemwise, tile_loop = structured.TileUsingForOp(
-        leaf_elemwise, sizes=reduction_tile_size
+        leaf_elemwise, sizes=reduction_tile
     ).results
     # Fuse all elemwise producers into the tiled leaf loop.
     fuse_elemwise_producers_to_loop(tiled_elemwise, tile_loop)
@@ -186,7 +212,7 @@ def bundle_xegpu_reduction_schedule(
     # alive and thus not removed.
     reduction_ops = transform_ext.reverse_handles(reduction_ops)
     with lh_transform.foreach(reduction_ops) as reduction_op:
-        tile_and_fuse_reduction(reduction_op, reduction_tile_size)
+        tile_and_fuse_reduction(reduction_op, reduction_tile)
         transform.apply_dce(wg_loop)
         transform.yield_()
 
@@ -219,8 +245,11 @@ def bundle_xegpu_reduction_schedule(
     func = get_named_func(mod, payload_func_name)
     # set the number of threads for the gpu.launch operation
     launch_op = match_and_split(func, ops={"gpu.launch"})
-    num_subgroups = parameters["wg_rows"] // parameters["sg_rows"]
-    num_threads = num_subgroups * parameters["subgroup_size"]
+    num_subgroups = 1
+    for wg, sg in zip(wg_tile, sg_tile):
+        if wg > 0 and sg > 0:
+            num_subgroups *= wg // sg
+    num_threads = num_subgroups * subgroup_size
     xegpu.set_gpu_launch_threads(launch_op[0], threads=[num_threads, 1, 1])
 
     # outline gpu func
@@ -244,8 +273,16 @@ def bundle_xegpu_reduction_schedule(
     gpu_func = match(gpu_mod, ops={"gpu.func"})
     store_nd_ops = match(gpu_func, ops={"xegpu.store_nd"})
     store_matrix_ops = match(gpu_func, ops={"xegpu.store_matrix"})
-    sg_layout = [parameters["sg_rows"], 1]
-    sg_data = [parameters["sg_rows"], parameters["reduction_step_size"]]
+    sg_layout = [1] * ndims
+    for i, (wg, sg) in enumerate(zip(wg_tile, sg_tile)):
+        if wg > 0 and sg > 0:
+            sg_layout[i] = int(wg // sg)
+    sg_data = [1] * ndims
+    for i, (sg, red) in enumerate(zip(sg_tile, reduction_tile)):
+        if sg > 0:
+            sg_data[i] = sg
+        elif red > 0:
+            sg_data[i] = red
     with lh_transform.foreach(store_nd_ops) as store_op:
         xegpu.set_anchor_layout(store_op, sg_layout=sg_layout, sg_data=sg_data)
         transform.yield_()
