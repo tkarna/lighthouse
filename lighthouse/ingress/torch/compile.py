@@ -3,6 +3,7 @@ from collections.abc import Sequence
 import contextlib
 from dataclasses import dataclass
 from enum import Enum
+import functools
 
 from lighthouse import utils as lh_utils
 import lighthouse.dialects as lh_dialects
@@ -84,6 +85,14 @@ class JITFunction:
         self.results = results
         self.n_outputs = n_outputs if n_outputs is not None else len(results)
 
+    @functools.cached_property
+    def output_tensors(self) -> list[torch.Tensor]:
+        """Allocate and cache buffers for the MLIR function results."""
+        return [
+            torch.empty(res.shape, dtype=res.dtype, device=res.device)
+            for res in self.results
+        ]
+
     def _generate_input_args(
         self, *args: torch.Tensor
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
@@ -93,11 +102,7 @@ class JITFunction:
         Args:
             args: Input tensors.
         """
-        # Allocate empty buffers to store results.
-        outs = [
-            torch.empty(res.shape, dtype=res.dtype, device=res.device)
-            for res in self.results
-        ]
+        outs = self.output_tensors
 
         # Prepare arguments according to MLIR backend's calling convention:
         # input data followed by output storage buffers.
