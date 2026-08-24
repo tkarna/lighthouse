@@ -353,12 +353,11 @@ class ReplaceWithFusedAttentionOp(
             # P is the lhs operand of the P@V contract being replaced, so its
             # existing type tells us the precision the rest of the graph expects.
             p_element_type = ir.VectorType(output_op.operands[0].type).element_type
-            # Both matmul accumulators run in f32, while the online softmax
-            # (scale, running max and sum, exp) runs in the narrower type the
-            # scale constant uses, matching the reference IR that truncates
-            # Q@K^T before the softmax.
+            # Both matmul accumulators and the online softmax (scale, running
+            # max and sum, exp) run in f32 for numerical accuracy; only the
+            # matmul operands (Q, K, V, P) keep their narrower element types.
             compute_type = ir.F32Type.get()
-            reduction_type = ir.VectorType(scale_op.results[0].type).element_type
+            reduction_type = compute_type
 
             # Build the fused attention computation
             with ir.InsertionPoint(output_op):
