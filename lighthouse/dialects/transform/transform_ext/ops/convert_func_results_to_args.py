@@ -128,12 +128,10 @@ class ConvertFuncResultsToArgsOp(
 
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
         @staticmethod
-        def get_effects(op: "ConvertFuncResultsToArgsOp"):
-            return (
-                transform.consumes_handle(op.op_operands)
-                + transform.produces_handle(op.results)
-                + transform.modifies_payload()
-            )
+        def get_effects(op: "ConvertFuncResultsToArgsOp", effects):
+            transform.consumes_handle(op.op_operands, effects)
+            transform.produces_handle(op.results, effects)
+            transform.modifies_payload(effects)
 
 
 def convert_func_results_to_args(

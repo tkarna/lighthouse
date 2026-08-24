@@ -87,12 +87,10 @@ class UpdateAddressSpaceOp(
 
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
         @staticmethod
-        def get_effects(op: ir.Operation):
-            return (
-                transform.consumes_handle(op.op_operands[:1])
-                + transform.produces_handle(op.results)
-                + transform.modifies_payload()
-            )
+        def get_effects(op: ir.Operation, effects):
+            transform.consumes_handle(op.op_operands[:1], effects)
+            transform.produces_handle(op.results, effects)
+            transform.modifies_payload(effects)
 
 
 def update_address_space(

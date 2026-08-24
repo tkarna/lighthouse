@@ -168,12 +168,10 @@ class MoveOffsetsToSubviewOp(
 
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
         @staticmethod
-        def get_effects(op: "MoveOffsetsToSubviewOp"):
-            return (
-                transform.consumes_handle(op.op_operands)
-                + transform.produces_handle(op.results)
-                + transform.modifies_payload()
-            )
+        def get_effects(op: "MoveOffsetsToSubviewOp", effects):
+            transform.consumes_handle(op.op_operands, effects)
+            transform.produces_handle(op.results, effects)
+            transform.modifies_payload(effects)
 
 
 def move_offsets_to_subview(

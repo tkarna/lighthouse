@@ -101,15 +101,12 @@ class ReplaceOp(TransformExtensionDialect.Operation, name="replace"):
 
     class MemoryEffectsOpInterfaceModel(ir.MemoryEffectsOpInterface):
         @staticmethod
-        def get_effects(op: ir.Operation):
-            effects = transform.consumes_handle(op.op_operands[:1])
+        def get_effects(op: ir.Operation, effects):
+            transform.consumes_handle(op.op_operands[:1], effects)
             if new_operands_handles := op.op_operands[1:]:
-                effects += transform.only_reads_handle(new_operands_handles)
-            return (
-                effects
-                + transform.produces_handle(op.results)
-                + transform.modifies_payload()
-            )
+                transform.only_reads_handle(new_operands_handles, effects)
+            transform.produces_handle(op.results, effects)
+            transform.modifies_payload(effects)
 
 
 def replace(
