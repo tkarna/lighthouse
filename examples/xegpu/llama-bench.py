@@ -11,13 +11,15 @@ import argparse
 from pathlib import Path
 
 import torch
+import torch._dynamo as dynamo
 from mlir import ir
 
 from lighthouse import dialects as lh_dialects
-from lighthouse.ingress.torch import import_model, import_from_model
+from lighthouse.ingress.torch import gpu_backend, import_model, TargetDialect
+from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.schedule import xegpu
-from lighthouse.schedule.func import convert_function_results
+from lighthouse.execution.runner import Runner
 
 ATTENTION_CASE = Path(__file__).with_name("llama-bench_5_attention.py")
 
@@ -36,9 +38,7 @@ STAGES = [
 
 def build_pipeline(stop_at_stage: str) -> list[ir.Module]:
     """Parameter-free XeGPU lowering pipeline, truncated at `stop_at_stage`."""
-    # Move the tensor result into an output arg, matching the kernel-bench
-    # "initial" form (the ingress backend does this via move_results_to_args).
-    schedules = [convert_function_results()]
+    schedules = []
     if stop_at_stage == "initial":
         return schedules
     schedules.append(xegpu.cleanup_schedule())
@@ -66,6 +66,22 @@ def build_pipeline(stop_at_stage: str) -> list[ir.Module]:
     return schedules
 
 
+def is_caused_by_pipeline_interrupt(exc: BaseException) -> bool:
+    pending = [exc]
+    visited = set()
+    while pending:
+        current = pending.pop()
+        if current is None or current in visited:
+            continue
+        visited.add(current)
+        if isinstance(current, PipelineInterrupt):
+            return True
+        pending.extend(
+            [getattr(current, "__cause__", None), getattr(current, "__context__", None)]
+        )
+    return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -76,17 +92,43 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    benchmark = True
+    payload_func_name = "main"
+
     with ir.Context() as ctx, ir.Location.unknown():
         lh_dialects.register_and_load()
 
-        model, inputs, kwargs = import_model(
+        model, inputs, _kwargs = import_model(
             ATTENTION_CASE, model_datatype=torch.bfloat16
         )
         inputs = [t.to(torch.bfloat16) for t in inputs]
-        mod = import_from_model(model, inputs, kwargs, ir_context=ctx)
 
-        TransformDriver(schedules=build_pipeline(args.dump_kernel)).apply(mod)
-        print(mod)
+        def compile_model(mod: ir.Module) -> ir.Module:
+            Runner.make_function_callable(mod, payload_func_name)
+            schedules = build_pipeline(args.dump_kernel)
+            if benchmark:
+                wrapper = Runner.get_bench_wrapper_schedule(payload_func_name)
+                schedules = [wrapper] + schedules
+
+            lowered_mod = (
+                TransformDriver(schedules=schedules).apply(mod) if schedules else mod
+            )
+            print(lowered_mod)
+            raise PipelineInterrupt()
+
+        backend = gpu_backend(
+            compile_model,
+            device=torch.device("xpu"),
+            dialect=TargetDialect.LINALG_ON_TENSORS,
+            ir_context=ctx,
+        )
+        model.compile(dynamic=False, backend=backend)
+        try:
+            with torch.no_grad():
+                model(*inputs)
+        except dynamo.exc.BackendCompilerFailed as exc:
+            if not is_caused_by_pipeline_interrupt(exc):
+                raise
 
 
 if __name__ == "__main__":
