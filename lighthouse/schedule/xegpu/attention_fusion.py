@@ -16,9 +16,6 @@ def transform_to_flash_attention(
     After generalization: ``s = Q@K^T * scale``, ``m = max(s)``,
     ``p = exp(s-m)``, ``o = p@V``, ``l = sum(p)``, and ``out = o/l``.
     Fuse the row sum and P@V separately, each with its own online correction.
-    Assumes finite V and finite or -inf scores; the output normalization must
-    preserve the fully-masked-row guard. All--inf row masks are rewritten using
-    the running/final maximum before sinking score producers.
     """
     # Match the necessary op handles. Number of reduction and elementwise loops
     # can vary due to possible prologue/epilogue and P mask generation.
