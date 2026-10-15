@@ -100,13 +100,10 @@ class FuseDependentReductionOpsOp(
     Each handle must identify one op. Invalid handles or an illegal chain cause
     a silenceable failure.
 
-    The payload is inspected at apply time to recognize ``exp(x - maximum(x))``.
-    Scores must be finite or negative infinity and other R2 inputs (e.g. V) finite.
-    Empty tiles contribute zero, and the correction is ``exp(m_old - m_new)``,
-    or zero when the old maximum is negative infinity. Fully masked rows still
-    require a guard on the final normalization. Other separable E/R1 patterns
-    retain the generic correction. Independent zero masks are supported in R2,
-    whether already fused or in a separate elementwise chain.
+    The correction is computed generically from E as ``term(new) / term(old)``.
+    This does not handle softmax's all-negative-infinity tiles; such inputs
+    require guards outside this transform. Independent zero masks are supported
+    in R2, whether already fused or in a separate elementwise chain.
 
     Args:
         elementwise_op: Handle to the elementwise term ``E``.
@@ -226,8 +223,7 @@ def fuse_dependent_reduction_ops(
 ) -> ir.Value[transform.AnyOpType]:
     """Fuse the chain using apply-time payload analysis.
 
-    Recognized softmax uses stable correction, assumes finite auxiliary inputs
-    (V) and finite or -inf scores, and requires a final fully-masked-row guard.
+    The generic correction may require numerical or domain-specific guards.
     """
     op = FuseDependentReductionOpsOp(
         elementwise_op=elementwise_op,
