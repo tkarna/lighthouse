@@ -198,8 +198,8 @@ def _matching_maximum(loop, mask):
     return None
 
 
-def _guarded_probability(value, maximum):
-    """Recognize the zero-on-empty-prefix exp emitted by dependent fusion."""
+def _probability(value, maximum):
+    """Recognize the tiled exp(score - running maximum)."""
     op = _producer(value)
     if not (
         isinstance(op, linalg.GenericOp)
@@ -233,6 +233,8 @@ def _guarded_probability(value, maximum):
     sub = _producer(exp.operands[0])
     if not isinstance(sub, arith.SubFOp) or sub.operands[0] != body.arguments[0]:
         return None
+    if sub.operands[1] == body.arguments[1]:
+        return op
     guard = _producer(sub.operands[1])
     if (
         isinstance(guard, arith.SelectOp)
@@ -248,8 +250,8 @@ def _prefix_mask_use(consumer, operand_index, maximum):
     """Only substitute a prefix predicate when its selected weights are zero.
 
     The consumer is either the PV reduction with the mask inlined or a separate
-    elementwise mask producer feeding it. Either way, a prefix-empty row has
-    zero guarded probabilities, so both predicates select identical values.
+    elementwise mask producer feeding it. For unguarded E, this substitution
+    does not itself make all--inf prefixes numerically safe.
     """
     if not isinstance(consumer, linalg.GenericOp):
         return False
@@ -269,7 +271,7 @@ def _prefix_mask_use(consumer, operand_index, maximum):
         ):
             return False
         p_index = list(body.arguments).index(select.operands[2])
-        probability = _guarded_probability(inputs[p_index], maximum)
+        probability = _probability(inputs[p_index], maximum)
         if probability is None:
             return False
         p_map = indexing_maps(consumer)[p_index]

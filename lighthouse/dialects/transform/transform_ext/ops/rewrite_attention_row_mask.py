@@ -16,8 +16,9 @@ class RewriteAttentionRowMaskOp(
     Run after dependent reduction fusion, before sinking score producers. A
     recognized ``all(scores == -inf)`` is replaced in PV by a comparison against
     the updated running maximum, and in post-loop users by the final maximum.
-    PV's select must mask the guarded exponential to zero. Scores must be finite
-    or -inf, and V finite, as required by the online attention fusion.
+    PV's select must mask the exponential to zero. Scores must be finite
+    or -inf, and V finite. An unguarded exponential may still produce NaNs
+    for all--inf prefixes; this rewrite does not fix that numerical issue.
 
     Unmatched masks, unsupported uses and pre-loop users are preserved. With no
     matching mask this is a no-op, so the same schedule supports unmasked attention.
