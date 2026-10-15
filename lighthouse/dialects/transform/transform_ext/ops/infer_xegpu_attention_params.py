@@ -53,7 +53,6 @@ class InferXeGPUAttentionParamsOp(
                 return DiagnosedSilenceableFailure.SilenceableFailure
             rank = ir.ShapedType(target_ops[0].results[0].type).rank
 
-            i64 = ir.IntegerType.get_signless(64)
             size_attrs = InferXeGPUAttentionParamsOp._size_attrs
             # WG/SG row sizes and the reduction (K/V seq) tile are hard-coded.
             wg_rows, sg_rows, reduction_tile = 128, 16, 64
@@ -61,8 +60,10 @@ class InferXeGPUAttentionParamsOp(
             # query-row dim by the WG row size, and leave d_head untiled.
             if rank == 4:  # plain MHA: (batch, head, query_row, d_head)
                 wg, sg = [1, 1, wg_rows], [0, 0, sg_rows]
+                red = [0, 0, 0, reduction_tile]
             elif rank == 5:  # GQA: (batch, kv_head, group, query_row, d_head)
                 wg, sg = [1, 1, 1, wg_rows], [0, 0, 0, sg_rows]
+                red = [0, 0, 0, 0, reduction_tile]
             else:
                 op.location.emit_error(
                     "infer_xegpu_attention_params: unsupported attention leaf "
@@ -71,9 +72,7 @@ class InferXeGPUAttentionParamsOp(
                 return DiagnosedSilenceableFailure.SilenceableFailure
             results.set_params(op.wg_tile, size_attrs(wg))
             results.set_params(op.sg_tile, size_attrs(sg))
-            results.set_params(
-                op.reduction_tile, [ir.IntegerAttr.get(i64, reduction_tile)]
-            )
+            results.set_params(op.reduction_tile, size_attrs(red))
             return DiagnosedSilenceableFailure.Success
 
         @staticmethod
