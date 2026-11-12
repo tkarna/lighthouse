@@ -71,7 +71,17 @@ class InferXeGPUAttentionParamsOp(
                 # multi-head attention: (head, query_row, d_head)
                 # batched multi-head attention: (batch, head, query_row, d_head)
                 # batched grouped-query attention: (batch, kv_head, group, query_row, d_head)
-                wg_rows, reduction_tile = 128, 64  # TODO tile size selection
+
+                # TODO better tile size inference
+                # Default tile values
+                wg_rows, reduction_tile = 128, 64
+
+                leaf_op_result_shape = ir.ShapedType(target_op.results[0].type).shape
+                d_head = leaf_op_result_shape[-1]
+                if leaf_op_result_shape[-1] > 64:
+                    # Use a smaller reduction tile to reduce register pressure.
+                    reduction_tile = 32
+
                 # Tile every leading parallel dim (incl. the GQA group) by 1, the
                 # query-row dim by the WG row size, and leave d_head untiled.
                 if rank == 3:  # plain MHA

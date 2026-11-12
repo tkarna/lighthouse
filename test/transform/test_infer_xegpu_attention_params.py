@@ -240,6 +240,10 @@ def run_dpas(name, payload_str):
 # CHECK-SAME: in (2, 3, 2)
 run("mha", MHA_PAYLOAD)
 
+# CHECK-LABEL: Test: mha_head_65
+# CHECK: reduction_tile = 32 : i64
+run("mha_head_65", MHA_PAYLOAD.replace("256x64", "256x65"))
+
 # Forced values replace each inferred tile. The forced workgroup tile
 # [2, 3, 64] produces four query-row tiles; the other params are checked on the
 # function attributes.
@@ -269,6 +273,18 @@ run(
 # CHECK: scf.forall
 # CHECK-SAME: in (2, 3, 5, 2)
 run("gqa", GQA_PAYLOAD)
+
+# CHECK-LABEL: Test: gqa_head_128
+# CHECK: reduction_tile = 32 : i64
+run("gqa_head_128", GQA_PAYLOAD.replace("256x64", "256x128"))
+
+# CHECK-LABEL: Test: gqa_head_128_forced
+# CHECK: reduction_tile = 64 : i64
+run(
+    "gqa_head_128_forced",
+    GQA_PAYLOAD.replace("256x64", "256x128"),
+    force_reduction_tile=[0, 0, 0, 0, 64],
+)
 
 # The first vector.contract in foo.mlir has result shape (128, 64). Inference
 # reduces that to a 1D workgroup tile [128] and reduction tile [0, 64].
