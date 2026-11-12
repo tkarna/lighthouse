@@ -263,8 +263,10 @@ def annotate_attention(
             force_sg_tile.append(0)
 
     # Infer tile sizes as 2D vectors
-    wg_tile_vec, sg_tile_vec, red_tile_vec = transform_ext.infer_xegpu_attention_params(
-        anchor_op, force_sg_tile=force_sg_tile
+    wg_tile_vec, sg_tile_vec, red_tile_vec, d_head = (
+        transform_ext.infer_xegpu_attention_params(
+            anchor_op, force_sg_tile=force_sg_tile
+        )
     )
 
     anytype = transform.AnyOpType.get()
@@ -278,8 +280,6 @@ def annotate_attention(
     # Q@K^T dpas: (wg_rows, d_head) * (d_head, red_tile) = (wg_rows, red_tile)
     # P@V dpas: (wg_rows, red_tile) * (red_tile, d_head) = (wg_rows, d_head)
 
-    # TODO infer d_head value, infer_xegpu_attention_params returns it?
-    d_head = int_to_param(64)
     red_tile = transform_ext.extract_handle(red_tile_vec, 1)
     sg_rows = transform_ext.extract_handle(sg_tile_vec, 0)
 
