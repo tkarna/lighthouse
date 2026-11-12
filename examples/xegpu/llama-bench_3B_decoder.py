@@ -94,8 +94,8 @@ def get_init_inputs():
 # CHECK: gpu.func @main_kernel({{.*}}memref<2048x3072xbf16>{{.*}}memref<512x128xbf16>{{.*}}memref<4x8x3x512x128xbf16>
 # CHECK: gpu.func @main_kernel({{.*}}memref<2048x1024xbf16>{{.*}}memref<512x128xbf16>{{.*}}memref<4x8x512x128xbf16>
 # CHECK: gpu.func @main_kernel({{.*}}memref<4x8x3x512x128xbf16>{{.*}}memref<4x8x512x128xbf16>
-# CHECK: xegpu.dpas {{.*}} vector<128x128xbf16>, vector<128x64xbf16>
-# CHECK: xegpu.dpas {{.*}} vector<128x64xbf16>, vector<64x128xbf16>
+# CHECK: xegpu.dpas {{.*}} vector<128x128xbf16>, vector<128x32xbf16>
+# CHECK: xegpu.dpas {{.*}} vector<128x32xbf16>, vector<32x128xbf16>
 # CHECK: xegpu.store_nd {{.*}} vector<128x128xbf16>
 # CHECK: gpu.func @main_kernel({{.*}}memref<3072x3072xbf16>
 # CHECK: gpu.func @main_kernel({{.*}}memref<8192x3072xbf16>{{.*}}memref<4x512x8192xbf16>
