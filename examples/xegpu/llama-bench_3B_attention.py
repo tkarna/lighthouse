@@ -1,3 +1,6 @@
+# RUN: %PYTHON %S/kernel_bench.py --input %s --dump-kernel xegpu-wg | FileCheck %s
+# REQUIRES: torch, torch_mlir
+
 """Llama 3.2 3B causal grouped-query attention with pre-projected Q/K/V.
 
 RoPE is not applied here; inputs are assumed to be already projected and
@@ -40,3 +43,8 @@ def get_inputs():
 
 def get_init_inputs():
     return []
+
+
+# CHECK: gpu.func @main_kernel
+# CHECK: xegpu.dpas {{.*}} vector<128x128xbf16>, vector<128x32xbf16>
+# CHECK: xegpu.dpas {{.*}} vector<128x32xbf16>, vector<32x128xbf16>
