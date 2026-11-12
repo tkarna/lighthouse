@@ -46,5 +46,8 @@ def get_init_inputs():
 
 
 # CHECK: gpu.func @main_kernel
+# CHECK: xegpu.prefetch_nd
+# CHECK-SAME: sg_layout = [4, 8], sg_data = [8, 16], inst_data = [8, 16]
+# CHECK-SAME: !xegpu.tensor_desc<32x128xbf16
 # CHECK: xegpu.dpas {{.*}} vector<128x128xbf16>, vector<128x32xbf16>
 # CHECK: xegpu.dpas {{.*}} vector<128x32xbf16>, vector<32x128xbf16>
