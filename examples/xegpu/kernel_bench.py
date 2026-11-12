@@ -177,13 +177,6 @@ def infer_parameters(
         )
     elif len(matmuls) > 0 and len(batch_matmuls) == 0:
         schedule_params = XeGPUParameterSelector().get_parameters_for_layers(matmuls)
-        # check that all matmul dims are powers of 2
-        for mmul in matmuls:
-            for char, dim in zip(["m", "n", "k"], mmul["shape"]):
-                assert dim & (dim - 1) == 0, (
-                    f"Matmul shape must be a power of 2, got {char}={dim}"
-                )
-
         # compute flops
         total_flops = 0
         read_bytes = 0
