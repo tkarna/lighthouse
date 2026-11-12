@@ -287,36 +287,12 @@ def infer_parameters(
         for layer in [s for s in func_metadata["layers"] if s["kind"] == "elemwise"]:
             max_elemwise_dims = max(max_elemwise_dims, len(layer["shape"]))
 
-        if max_elemwise_dims == 4:
-            # MHA case
-            layer_params = {
-                "layer_kind": "attention",
-                "wg_tile": [1, 1, 128],
-                "sg_tile": [0, 0, 16],
-                "reduction_tile": [0, 0, 0, 64],
-                "q_load_tile": [16, 16],
-                "v_load_tile": [32, 32],
-                "prefetch_tile": [16, 32],
-                "nb_prefetch": 1,
-            }
-        elif max_elemwise_dims == 5:
-            # GQA case
-            layer_params = {
-                "layer_kind": "attention",
-                "wg_tile": [1, 1, 1, 128],
-                "sg_tile": [0, 0, 16],
-                "reduction_tile": [0, 0, 0, 0, 64],
-                "q_load_tile": [16, 16],
-                "v_load_tile": [32, 32],
-                "prefetch_tile": [16, 32],
-                "nb_prefetch": 1,
-            }
-        else:
+        if max_elemwise_dims not in (4, 5):
             raise ValueError(
                 f"Unsupported attention layer dimensionality: {max_elemwise_dims}"
             )
 
-        schedule_params = ScheduleParameters([layer_params])
+        schedule_params = ScheduleParameters([{"layer_kind": "attention"}])
         schedule_kind = "attention"
     else:
         print("Layers:")
