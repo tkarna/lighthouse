@@ -100,7 +100,7 @@ def build_schedule(
             -1,
             silenceable=True,
         )
-        wg_tile, sg_tile, reduction_tile, _ = (
+        wg_tile, sg_tile, reduction_tile, d_head = (
             transform_ext.infer_xegpu_attention_params(
                 leaf,
                 force_wg_tile=force_wg_tile,
@@ -127,6 +127,7 @@ def build_schedule(
             "reduction_tile",
             param=transform_ext.extract_handle(reduction_tile, -1),
         )
+        transform.annotate(func, "d_head", param=d_head)
         transform.yield_()
     return sched
 
@@ -235,7 +236,8 @@ def run_dpas(name, payload_str):
 # MHA: wg_tile [1, 1, 128] tiles (batch, head, query_row); query rows 256/128=2.
 # d_head is left untiled. reduction (K/V seq) tile is 64 (on the func attr).
 # CHECK-LABEL: Test: mha
-# CHECK: reduction_tile = 64 : i64
+# CHECK-DAG: d_head = 64 : i64
+# CHECK-DAG: reduction_tile = 64 : i64
 # CHECK: scf.forall
 # CHECK-SAME: in (2, 3, 2)
 run("mha", MHA_PAYLOAD)
@@ -275,7 +277,8 @@ run(
 run("gqa", GQA_PAYLOAD)
 
 # CHECK-LABEL: Test: gqa_head_128
-# CHECK: reduction_tile = 32 : i64
+# CHECK-DAG: d_head = 128 : i64
+# CHECK-DAG: reduction_tile = 32 : i64
 run("gqa_head_128", GQA_PAYLOAD.replace("256x64", "256x128"))
 
 # CHECK-LABEL: Test: gqa_head_128_forced

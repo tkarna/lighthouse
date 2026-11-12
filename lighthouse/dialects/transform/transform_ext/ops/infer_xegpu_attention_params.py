@@ -16,7 +16,7 @@ class InferXeGPUAttentionParamsOp(
     one i64 per iteration dimension (in loop order), so they can be passed
     directly to the tiling routines without splitting; `reduction_tile` is a
     list of i64 params in loop order. The final result is the head dimension
-    for an xegpu.dpas anchor; it is empty for other anchor kinds.
+    for a linalg.generic or xegpu.dpas anchor; it is empty for vector.contract.
 
     NOTE: This is just a placeholder implementation with hard-coded tile sizes.
 
@@ -64,7 +64,7 @@ class InferXeGPUAttentionParamsOp(
             rank = ir.ShapedType(target_op.results[0].type).rank
 
             sg_rows = 16  # TODO implement sg_rows selection heuristic
-            d_head = []
+            d_head = None
 
             if isinstance(target_op, linalg.GenericOp):
                 # Assume non-tiled linalg.matmul; 3 shape variants:
@@ -78,7 +78,7 @@ class InferXeGPUAttentionParamsOp(
 
                 leaf_op_result_shape = ir.ShapedType(target_op.results[0].type).shape
                 d_head = leaf_op_result_shape[-1]
-                if leaf_op_result_shape[-1] > 64:
+                if d_head > 64:
                     # Use a smaller reduction tile to reduce register pressure.
                     reduction_tile = 32
 
@@ -111,8 +111,7 @@ class InferXeGPUAttentionParamsOp(
                 # Result shape is (wg_rows, reduction_tile)
                 # Operand A shape is (wg_rows, d_head)
                 wg_rows, reduction_tile = ir.ShapedType(target_op.results[0].type).shape
-                _, head_size = ir.ShapedType(target_op.operands[0].type).shape
-                d_head = [head_size]
+                d_head = ir.ShapedType(target_op.operands[0].type).shape[-1]
                 wg = [wg_rows, 1]
                 sg = [sg_rows, 0]
                 red = [0, reduction_tile]
@@ -139,7 +138,9 @@ class InferXeGPUAttentionParamsOp(
             results.set_params(op.wg_tile, size_attrs(wg))
             results.set_params(op.sg_tile, size_attrs(sg))
             results.set_params(op.reduction_tile, size_attrs(red))
-            results.set_params(op.d_head, size_attrs(d_head))
+            results.set_params(
+                op.d_head, size_attrs([d_head] if d_head is not None else [])
+            )
             return DiagnosedSilenceableFailure.Success
 
         @staticmethod
@@ -176,7 +177,7 @@ def infer_xegpu_attention_params(
         Tuple of params holding the wg and sg tile sizes (one i64 per iteration
         dimension, ready to pass to the tiling routines) and the reduction
         tile sizes in loop order. The fourth param holds the head dimension for
-        xegpu.dpas anchors and is empty for other anchor kinds.
+        linalg.generic and xegpu.dpas anchors and is empty for vector.contract.
     """
     wg_param = None
     if force_wg_tile is not None:
