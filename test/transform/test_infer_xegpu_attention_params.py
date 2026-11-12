@@ -100,11 +100,13 @@ def build_schedule(
             -1,
             silenceable=True,
         )
-        wg_tile, sg_tile, reduction_tile = transform_ext.infer_xegpu_attention_params(
-            leaf,
-            force_wg_tile=force_wg_tile,
-            force_sg_tile=force_sg_tile,
-            force_reduction_tile=force_reduction_tile,
+        wg_tile, sg_tile, reduction_tile, _ = (
+            transform_ext.infer_xegpu_attention_params(
+                leaf,
+                force_wg_tile=force_wg_tile,
+                force_sg_tile=force_sg_tile,
+                force_reduction_tile=force_reduction_tile,
+            )
         )
         # Tiling with wg_tile surfaces the per-dim sizes as forall tile counts.
         structured.TileUsingForallOp(leaf, num_threads=[], tile_sizes=wg_tile)
@@ -157,8 +159,8 @@ def build_contract_schedule():
             0,
             silenceable=True,
         )
-        wg_tile, sg_tile, reduction_tile = transform_ext.infer_xegpu_attention_params(
-            contract
+        wg_tile, sg_tile, reduction_tile, _ = (
+            transform_ext.infer_xegpu_attention_params(contract)
         )
         transform.annotate(
             func,
@@ -197,8 +199,8 @@ def build_dpas_schedule():
             0,
             silenceable=True,
         )
-        wg_tile, sg_tile, reduction_tile = transform_ext.infer_xegpu_attention_params(
-            dpas
+        wg_tile, sg_tile, reduction_tile, d_head = (
+            transform_ext.infer_xegpu_attention_params(dpas)
         )
         for name, tile in (
             ("wg_tile", wg_tile),
@@ -215,6 +217,7 @@ def build_dpas_schedule():
             "reduction_tile",
             param=transform_ext.extract_handle(reduction_tile, -1),
         )
+        transform.annotate(func, "d_head", param=d_head)
         transform.yield_()
     return sched
 
@@ -283,4 +286,15 @@ run_contract("infer_xegpu_attention_params_contract", CONTRACT_PAYLOAD)
 # CHECK-DAG: sg_tile_0 = 16 : i64
 # CHECK-DAG: sg_tile_1 = 0 : i64
 # CHECK-DAG: reduction_tile = 64 : i64
+# CHECK-DAG: d_head = 64 : i64
 run_dpas("infer_xegpu_attention_params_dpas", DPAS_PAYLOAD)
+
+# CHECK-LABEL: Test: infer_xegpu_attention_params_dpas_128
+# CHECK-DAG: d_head = 128 : i64
+# CHECK-DAG: reduction_tile = 64 : i64
+run_dpas(
+    "infer_xegpu_attention_params_dpas_128",
+    DPAS_PAYLOAD.replace("128x64xbf16", "128x128xbf16").replace(
+        "64x64xbf16", "128x64xbf16"
+    ),
+)
