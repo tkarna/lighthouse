@@ -283,8 +283,6 @@ def infer_parameters(
         read_bytes = int(3 * batch_size * n_head * n_ctx * d_head * nbytes)
         write_bytes = int(batch_size * n_head * n_ctx * d_head * nbytes)
 
-        assert d_head == 64, f"d_head must be 64, got {d_head}"
-
         max_elemwise_dims = 0
         for layer in [s for s in func_metadata["layers"] if s["kind"] == "elemwise"]:
             max_elemwise_dims = max(max_elemwise_dims, len(layer["shape"]))
