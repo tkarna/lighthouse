@@ -9,12 +9,17 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-second, first), dim=-1)
 
 
-def get_rope_tables(position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build Llama 3.2 1B's half-split RoPE tables for a 1D position tensor."""
+def get_rope_tables(
+    position_ids: torch.Tensor, d_head: int = 64
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build Llama 3.2 half-split RoPE tables for a 1D position tensor."""
+    if d_head <= 0 or d_head % 2:
+        raise ValueError("d_head must be a positive even number")
     inv_freq = 1.0 / (
         500000.0
         ** (
-            torch.arange(0, 64, 2, dtype=torch.float32, device=position_ids.device) / 64
+            torch.arange(0, d_head, 2, dtype=torch.float32, device=position_ids.device)
+            / d_head
         )
     )
     wavelength = 2 * math.pi / inv_freq
