@@ -117,16 +117,34 @@ def _is_elementwise_linalg(op: ir.Operation) -> bool:
 def _match_gemm(
     op: ir.Operation, block_ops, is_claimed=is_tagged
 ) -> list[tuple[list, ir.Operation]]:
-    """GEMM subgraph: matmul, its single-use elementwise epilogue chain, and the
-    elementwise producers (fill, transposes, broadcasts, ...) feeding it.
-    Producers are collected without cloning or redirecting uses. The anchor is
-    the last op of the epilogue chain. Token-only expansions and elementwise
-    epilogue DAGs are also claimed forward. At a join, the last available branch owns the
-    epilogue: external computations must precede the root matmul. Local
-    elementwise setup may follow it if its inputs are available. This
-    keeps parallel projections separate and their join before the next GEMM.
-    Collapses into a following GEMM remain outside to avoid tile-local
-    reshape copies during bufferization."""
+    """Match the GEMM subgraph rooted at op in the operation block.
+
+    Starting from an unclaimed linalg.matmul, collect its single-use
+    elementwise epilogue chain and use the last op of that chain as the
+    anchor. If there is no such epilogue, the matmul itself is the anchor.
+    Also collect elementwise producers such as fills, transposes and
+    broadcasts, without cloning operations or redirecting uses.
+
+    Extend the subgraph through elementwise epilogue branches and
+    expand_shape ops that leave the trailing dimension unchanged. At a join,
+    other inputs must be available before the root matmul, or computable by
+    local elementwise ops from available inputs. This keeps parallel
+    projections separate and assigns their join to the last available
+    branch, before the next GEMM. Leave collapse_shape consumers outside
+    to avoid tile-local reshape copies during bufferization.
+
+    Args:
+        op: Candidate linalg.matmul operation.
+        block_ops: Operations of the block, in program order.
+        is_claimed: Predicate identifying operations unavailable for matching.
+            Defaults to checking existing subgraph tags.
+
+    Returns:
+        A list of matched subgraphs as (members, anchor) tuples, where members
+        contains the collected operations and anchor is the linalg operation
+        to tile. Contains one tuple if a match is found, otherwise an empty
+        list. Members are not necessarily in program order.
+    """
     if not isinstance(op.opview, linalg.MatmulOp) or is_claimed(op):
         return []
     members = [op]
@@ -228,20 +246,29 @@ def _forward_closure(root: ir.Operation, members: list) -> list:
 def _match_elementwise(
     op: ir.Operation, block_ops: list, is_claimed=is_tagged
 ) -> list[tuple[list, ir.Operation]]:
-    """Elementwise subgraphs: connected components of untagged elementwise
-    linalg ops and the static data movement ops between them (reshapes, slices,
-    concats). The anchor is the first linalg op from which all linalg members
-    are reachable; the remaining ops are fused forward into its loop. Components
-    without such an op are left untagged.
+    """Match the elementwise subgraph containing op in the operation block.
 
-    Include a reshape, slice or concat only if it consumes an untagged
-    elementwise linalg result, directly or through other data movement ops.
-    For example, let cos_arg be a function argument and
-    cos = tensor.collapse_shape(cos_arg). If two independent linalg ops compute
-    Q*cos and K*cos, leave the shared collapse outside both subgraphs: it has
-    no elementwise linalg producer. Including it would connect the two
-    multiplications into one component, even though neither multiplication
-    produces a value used by the other and neither can anchor the whole group.
+    A subgraph is a connected component of unclaimed elementwise linalg ops
+    and their downstream reshapes, slices and concats within block_ops.
+    Data movement ops without an unclaimed elementwise linalg producer are
+    excluded, so shared input views do not merge independent computations.
+
+    The anchor is the first linalg op in block order from which all linalg
+    members are reachable through producer-to-consumer edges. Its consumers
+    can then be fused forward into its tiled loop. Components without such
+    an anchor are not matched.
+
+    Args:
+        op: Operation whose component to match.
+        block_ops: Operations of the block, in program order.
+        is_claimed: Predicate identifying operations unavailable for matching.
+            Defaults to checking existing subgraph tags.
+
+    Returns:
+        A list of matched subgraphs as (members, anchor) tuples, where members
+        contains the subgraph operations in program order and anchor is the
+        linalg operation to tile. Contains one tuple if a match is found,
+        otherwise an empty list.
     """
 
     candidates = {
@@ -287,12 +314,30 @@ def _match_elementwise(
 def _match_reduction(
     op: ir.Operation, block_ops: list, is_claimed=is_tagged
 ) -> list[tuple[list, ir.Operation]]:
-    """Claim normalization without crossing shared input materializations.
+    """Match the reduction subgraph rooted at op in the operation block.
 
-    Follow reduction consumers, including subsequent reductions, then absorb
-    producers only when all their uses are already local. A preceding residual
-    also used after normalization stays outside; the square/cast chain used only
-    by normalization stays inside. Shared fills are isolated during preparation.
+    Starting from an unclaimed generic reduction, follow consumers through
+    elementwise ops and further non-contraction generic reductions. Absorb
+    eligible producers only when all their users are already in the subgraph,
+    except that fills may be shared and isolated later during preparation.
+
+    This groups normalization computations without absorbing shared input
+    materializations: a preceding residual also used after normalization
+    stays outside, while its normalization-only square/cast chain stays inside.
+    Require a single elementwise sink and no external users of other members,
+    except fills. The sink is the anchor.
+
+    Args:
+        op: Candidate linalg.generic operation with a reduction iterator.
+        block_ops: Operations of the block, in program order.
+        is_claimed: Predicate identifying operations unavailable for matching.
+            Defaults to checking existing subgraph tags.
+
+    Returns:
+        A list of matched subgraphs as (members, anchor) tuples, where members
+        contains the subgraph operations in program order and anchor is the
+        elementwise sink to tile. Contains one tuple if a match is found,
+        otherwise an empty list.
     """
     if (
         not isinstance(op.opview, linalg.GenericOp)
@@ -364,7 +409,32 @@ def _contains(op, names):
 
 
 def _match_attention(root, block_ops, is_claimed=is_tagged):
-    """Claim a closed QK-softmax-PV DAG, stopping at projection/RoPE inputs."""
+    """Match the attention subgraph rooted at root in the operation block.
+
+    Starting from an unclaimed QK contraction, collect downstream linalg ops
+    and reshape, slice and transpose operations, stopping at linalg.matmul.
+    Recognize QK-softmax-PV attention by requiring exactly two contractions
+    and the maximum and exponential operations used by softmax.
+
+    Require a single, single-result sink and no external users of other
+    members. Absorb input setup such as casts, broadcasts, fills and constants,
+    but stop at projection results and RoPE arithmetic so they can be matched
+    separately. The anchor is the sink, or its producer after tracing backwards
+    through trailing data movement ops.
+
+    Args:
+        root: Candidate QK contraction, represented by linalg.generic or
+            linalg.batch_matmul.
+        block_ops: Operations of the block, in program order.
+        is_claimed: Predicate identifying operations unavailable for matching.
+            Defaults to checking existing subgraph tags.
+
+    Returns:
+        A list of matched subgraphs as (members, anchor) tuples, where members
+        contains the subgraph operations in program order and anchor is the
+        operation to tile. Contains one tuple if a match is found, otherwise
+        an empty list.
+    """
     if (
         is_claimed(root)
         or root.name not in ("linalg.generic", "linalg.batch_matmul")
