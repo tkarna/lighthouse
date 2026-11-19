@@ -232,16 +232,34 @@ def _match_elementwise(
     linalg ops and the static data movement ops between them (reshapes, slices,
     concats). The anchor is the first linalg op from which all linalg members
     are reachable; the remaining ops are fused forward into its loop. Components
-    without such an op are left untagged."""
+    without such an op are left untagged.
 
-    def candidate(o):
-        return (
-            o in block_ops
-            and not is_claimed(o)
-            and (_is_elementwise_linalg(o) or isinstance(o.opview, _DATA_MOVEMENT_OPS))
-        )
+    Include a reshape, slice or concat only if it consumes an untagged
+    elementwise linalg result, directly or through other data movement ops.
+    For example, let cos_arg be a function argument and
+    cos = tensor.collapse_shape(cos_arg). If two independent linalg ops compute
+    Q*cos and K*cos, leave the shared collapse outside both subgraphs: it has
+    no elementwise linalg producer. Including it would connect the two
+    multiplications into one component, even though neither multiplication
+    produces a value used by the other and neither can anchor the whole group.
+    """
 
-    if not candidate(op):
+    candidates = {
+        o for o in block_ops if not is_claimed(o) and _is_elementwise_linalg(o)
+    }
+    worklist = list(candidates)
+    while worklist:
+        for user in _users(worklist.pop()):
+            if (
+                user in block_ops
+                and user not in candidates
+                and not is_claimed(user)
+                and isinstance(user.opview, _DATA_MOVEMENT_OPS)
+            ):
+                candidates.add(user)
+                worklist.append(user)
+
+    if op not in candidates:
         return []
     component = [op]
     worklist = [op]
@@ -251,7 +269,7 @@ def _match_elementwise(
             p for p in map(_producer, current.operands) if p is not None
         ]
         for neighbor in neighbors:
-            if neighbor not in component and candidate(neighbor):
+            if neighbor not in component and neighbor in candidates:
                 component.append(neighbor)
                 worklist.append(neighbor)
     order = {o: i for i, o in enumerate(block_ops)}
