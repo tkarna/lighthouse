@@ -221,14 +221,20 @@ def _tile_reduction_body(wg_loop, reduction_tile):
 
 
 def _prepare_iteration_spaces(func):
-    """Prepare generic iteration spaces before subgraph tagging and WG tiling."""
+    """Prepare linalg iteration spaces for subgraph tagging and WG tiling.
+
+    Fold reshape boundaries into linalg loops so WG producer fusion can reach
+    and tile the producing computation.
+    """
     for i in range(3):
-        # Fold reshape ops by expansion and fold extract_slice into tensor.empty
-        # Repeat until no more folding.
-        func = transform_ext.fold_reshape_ops_by_expansion(func)
+        # Alternate expansion with empty-tensor folding and canonicalization
+        # to expose further reshape folds.
+        func = transform_ext.fold_reshape_ops_by_expansion(
+            func, preserve_input_unit_dims=True
+        )
         with ir.InsertionPoint(transform.apply_patterns(func).patterns):
             tensor.apply_patterns_tensor_fold_tensor_empty(fold_single_use_only=False)
-    lh_transform.cleanup(func)
+        lh_transform.cleanup(func)
     return func
 
 
