@@ -199,3 +199,84 @@ func.func @payload(%condition: i1) {
 # CHECK: Multiblock targets fail before changing the payload
 
 test_multiblock_rejection()
+
+
+def test_shared_input_views():
+    branches = []
+    for name in ("q", "k"):
+        branches.append(f"""
+  %{name}_empty = tensor.empty() : tensor<2x3xf32>
+  %{name}_neg = linalg.generic {{
+      indexing_maps=[affine_map<(i,j)->(i,j)>, affine_map<(i,j)->(i,j)>],
+      iterator_types=["parallel","parallel"]}}
+      ins(%{name} : tensor<2x3xf32>)
+      outs(%{name}_empty : tensor<2x3xf32>) {{
+    ^bb0(%x: f32, %o: f32):
+      %neg = arith.negf %x : f32
+      linalg.yield %neg : f32
+  }} -> tensor<2x3xf32>
+  %{name}_flat = tensor.collapse_shape %{name}_neg [[0,1]]
+      : tensor<2x3xf32> into tensor<6xf32>
+  %{name}_view = tensor.expand_shape %{name}_flat [[0,1]] output_shape [2,3]
+      : tensor<6xf32> into tensor<2x3xf32>
+  %{name}_out = linalg.generic {{
+      indexing_maps=[affine_map<(i,j)->(i,j)>, affine_map<(i,j)->(j)>,
+                     affine_map<(i,j)->(i,j)>],
+      iterator_types=["parallel","parallel"]}}
+      ins(%{name}_view, %bias_view : tensor<2x3xf32>, tensor<3xf32>)
+      outs(%{name}_empty : tensor<2x3xf32>) {{
+    ^bb0(%x: f32, %b: f32, %o: f32):
+      %sum = arith.addf %x, %b : f32
+      linalg.yield %sum : f32
+  }} -> tensor<2x3xf32>
+""")
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+        payload = ir.Module.parse(
+            """
+func.func @payload(%q: tensor<2x3xf32>, %k: tensor<2x3xf32>,
+                   %bias: tensor<1x3xf32>)
+    -> (tensor<2x3xf32>, tensor<2x3xf32>) {
+  %bias_view = tensor.collapse_shape %bias [[0,1]]
+      : tensor<1x3xf32> into tensor<3xf32>
+"""
+            + "".join(branches)
+            + """
+  return %q_out, %k_out : tensor<2x3xf32>, tensor<2x3xf32>
+}
+"""
+        )
+        with schedule_boilerplate() as (schedule, sequence):
+            func = lh_transform.match_op(sequence.bodyTarget, "func.func")
+            transform_ext.tag_subgraphs(func, kinds=["elementwise"])
+            transform.yield_()
+        schedule.body.operations[0].apply(payload.operation)
+        assert payload.operation.verify()
+        ops = list(payload.body.operations[0].regions[0].blocks[0].operations)
+        id_attr = "transform_ext.subgraph_id"
+        assert id_attr not in ops[0].attributes
+        generics = [op for op in ops if op.operation.name == "linalg.generic"]
+        ids = [ir.IntegerAttr(op.attributes[id_attr]).value for op in generics]
+        assert ids[0] == ids[1] != ids[2] == ids[3]
+        assert all(
+            "transform_ext.subgraph_anchor" in op.attributes
+            for op in (generics[0], generics[2])
+        )
+        views = [
+            op
+            for op in ops[1:]
+            if op.operation.name in ("tensor.collapse_shape", "tensor.expand_shape")
+        ]
+        assert len(views) == 4
+        assert [ir.IntegerAttr(op.attributes[id_attr]).value for op in views] == [
+            ids[0],
+            ids[0],
+            ids[2],
+            ids[2],
+        ]
+    print("Shared input views do not merge independent elementwise subgraphs")
+
+
+# CHECK: Shared input views do not merge independent elementwise subgraphs
+
+test_shared_input_views()
