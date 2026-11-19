@@ -7,6 +7,9 @@ from mlir.dialects import arith, ext, linalg, tensor, transform
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
+from lighthouse.dialects.transform.transform_ext.ops.filter_elementwise import (
+    is_elementwise,
+)
 from lighthouse.utils.mlir import indexing_maps, opview
 
 
@@ -16,6 +19,24 @@ def _producer(value):
 
 def _groups(reshape):
     return [[int(dim) for dim in group] for group in reshape.reassociation]
+
+
+def _feeds_broadcast(value):
+    worklist, visited = [value], set()
+    while worklist:
+        current = worklist.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        for use in current.uses:
+            user = opview(use.owner)
+            if isinstance(user, (tensor.CollapseShapeOp, tensor.ExpandShapeOp)):
+                worklist.append(user.result)
+            elif isinstance(user, linalg.GenericOp) and is_elementwise(user):
+                if not indexing_maps(user)[use.operand_number].is_permutation:
+                    return True
+                worklist.extend(user.results)
+    return False
 
 
 def _build_reshape_expansion_plan(generic, operand_number, reshape) -> tuple:
@@ -155,7 +176,7 @@ def _rewrite(generic, reshape, plan, rewriter):
     rewriter.replace_op(generic, replacements)
 
 
-def _fold_one(root, rewriter):
+def _fold_one(root, rewriter, *, preserve_input_unit_dims=False):
     candidates = []
 
     def visit(operation):
@@ -178,6 +199,17 @@ def _fold_one(root, rewriter):
             for i, value in enumerate(inputs):
                 reshape = _producer(value)
                 if not isinstance(reshape, tensor.CollapseShapeOp):
+                    continue
+                if (
+                    preserve_input_unit_dims
+                    and isinstance(reshape.src, ir.BlockArgument)
+                    and opview(reshape.src.owner.owner).operation.name == "func.func"
+                    and all(
+                        sum(reshape.src.type.shape[d] != 1 for d in group) <= 1
+                        for group in _groups(reshape)
+                    )
+                    and _feeds_broadcast(reshape.result)
+                ):
                     continue
                 plan = _build_reshape_expansion_plan(candidate, i, reshape)
                 if plan is not None:
@@ -208,11 +240,26 @@ class FoldReshapeOpsByExpansionOp(
 ):
     """Fold tensor reshapes into linalg loop dimensions without body fusion.
 
-    Temporary replacement for the not-yet-exposed native pattern collection.
+    This op is a temporary extension of the upstream pattern collection of the
+    same name.
+
     Within one func.func or builtin.module, greedily fold collapse_shape inputs
     and expand_shape results of linalg.generic and linalg.transpose. All legal
     matches are accepted, including shared producers; collapsed results preserve
     other users. Transposes stay named and their permutations are expanded.
+
+    preserve_input_unit_dims (default False) avoids adding loops for singleton
+    dimensions of broadcast inputs. For example, a function argument [1,S,D]
+    may be collapsed to [S,D] and broadcast over a linalg output [B,H,S,D].
+    Normally, folding that collapse expands the loop nest to [B,H,1,S,D] with a
+    spurious singleton loop. With this option, the collapse op is not folded
+    and we retain the original four-dimensional loop nest [B,H,S,D].
+
+    When this option is enabled, only skip collapses that remove size-1
+    dimensions from function arguments feeding a broadcast. Look through
+    pointwise ops and reshapes to find such uses, stopping at contractions and
+    reductions. Other reshape folds proceed normally. Function argument shapes
+    are unchanged; no input data is copied.
 
     Supports positive static, unencoded tensors, projected-permutation indexing
     maps, scalar inputs and region-free bodies (including linalg.index).
@@ -225,6 +272,9 @@ class FoldReshapeOpsByExpansionOp(
     """
 
     target: ext.Operand[transform.AnyOpType]
+    preserve_input_unit_dims: ir.IntegerAttr = ext.attribute(
+        default_factory=lambda: ir.IntegerAttr.get(ir.IntegerType.get_signless(1), 0)
+    )
     result: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
     @classmethod
@@ -244,7 +294,11 @@ class FoldReshapeOpsByExpansionOp(
                     "fold_reshape_ops_by_expansion expects one func.func or builtin.module"
                 )
                 return DiagnosedSilenceableFailure.SilenceableFailure
-            while _fold_one(targets[0], rewriter):
+            while _fold_one(
+                targets[0],
+                rewriter,
+                preserve_input_unit_dims=op.preserve_input_unit_dims.value,
+            ):
                 pass
             results.set_ops(op.result, targets)
             return DiagnosedSilenceableFailure.Success
@@ -265,6 +319,13 @@ class FoldReshapeOpsByExpansionOp(
 
 def fold_reshape_ops_by_expansion(
     target: ir.Value[transform.AnyOpType],
+    *,
+    preserve_input_unit_dims: bool = False,
 ) -> ir.Value[transform.AnyOpType]:
-    """Expand generic/transpose iteration spaces across static tensor reshapes."""
-    return FoldReshapeOpsByExpansionOp(target=target).result
+    """Expand iteration spaces, optionally retaining broadcast input unit views."""
+    return FoldReshapeOpsByExpansionOp(
+        target=target,
+        preserve_input_unit_dims=ir.IntegerAttr.get(
+            ir.IntegerType.get_signless(1), int(preserve_input_unit_dims)
+        ),
+    ).result

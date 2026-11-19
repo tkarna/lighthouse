@@ -104,9 +104,29 @@ TRANSPOSE_COLLAPSE = TRANSPOSE.replace(
 )
 
 
-def schedule(*, cleanup=True):
+UNIT_INPUT = """
+func.func @unit_input(%x: tensor<1x3x4xf32>) -> tensor<2x3x4xf32> {
+  %flat = tensor.collapse_shape %x [[0,1],[2]]
+    : tensor<1x3x4xf32> into tensor<3x4xf32>
+  %empty = tensor.empty() : tensor<2x3x4xf32>
+  %out = linalg.generic {
+    indexing_maps = [affine_map<(b,i,j)->(i,j)>, affine_map<(b,i,j)->(b,i,j)>],
+    iterator_types = ["parallel", "parallel", "parallel"]}
+    ins(%flat : tensor<3x4xf32>) outs(%empty : tensor<2x3x4xf32>) {
+  ^bb0(%a: f32, %o: f32):
+    %neg = arith.negf %a : f32
+    linalg.yield %neg : f32
+  } -> tensor<2x3x4xf32>
+  return %out : tensor<2x3x4xf32>
+}
+"""
+
+
+def schedule(*, cleanup=True, preserve_input_unit_dims=False):
     with schedule_boilerplate() as (module, sequence):
-        target = transform_ext.fold_reshape_ops_by_expansion(sequence.bodyTarget)
+        target = transform_ext.fold_reshape_ops_by_expansion(
+            sequence.bodyTarget, preserve_input_unit_dims=preserve_input_unit_dims
+        )
         if cleanup:
             lh_transform.cleanup(target)
         transform.yield_([])
@@ -125,9 +145,11 @@ def operations(module, name):
     return found
 
 
-def apply(source, *, cleanup=True):
+def apply(source, *, cleanup=True, preserve_input_unit_dims=False):
     module = ir.Module.parse(source)
-    transforms = schedule(cleanup=cleanup)
+    transforms = schedule(
+        cleanup=cleanup, preserve_input_unit_dims=preserve_input_unit_dims
+    )
     transforms.body.operations[0].apply(module.operation)
     assert module.operation.verify()
     return module
@@ -241,6 +263,100 @@ def test_named_transpose():
 # CHECK: Expansion preserves named transposes and updates their permutations
 
 
+def test_input_unit_dims():
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+        module = apply(UNIT_INPUT)
+        (generic,) = operations(module, "linalg.generic")
+        assert list(generic.inputs[0].type.shape) == [1, 3, 4]
+
+        module = apply(UNIT_INPUT, preserve_input_unit_dims=True)
+        (generic,) = operations(module, "linalg.generic")
+        assert list(generic.inputs[0].type.shape) == [3, 4]
+        assert len(generic.iterator_types) == 3
+        (collapse,) = operations(module, "tensor.collapse_shape")
+        assert generic.inputs[0] == collapse.result
+        assert list(operations(module, "func.func")[0].arguments[0].type.shape) == [
+            1,
+            3,
+            4,
+        ]
+
+        pointwise = """
+  %pointwise_empty = tensor.empty() : tensor<3x4xf32>
+  %pointwise = linalg.generic {
+    indexing_maps = [affine_map<(i,j)->(i,j)>, affine_map<(i,j)->(i,j)>],
+    iterator_types = ["parallel", "parallel"]}
+    ins(%flat : tensor<3x4xf32>) outs(%pointwise_empty : tensor<3x4xf32>) {
+  ^bb0(%a: f32, %o: f32):
+    %neg = arith.negf %a : f32
+    linalg.yield %neg : f32
+  } -> tensor<3x4xf32>
+"""
+        through_pointwise = UNIT_INPUT.replace(
+            "ins(%flat :", "ins(%pointwise :"
+        ).replace("  %empty =", pointwise + "  %empty =")
+        module = apply(through_pointwise, preserve_input_unit_dims=True)
+        first, second = operations(module, "linalg.generic")
+        assert len(first.iterator_types) == 2
+        assert len(second.iterator_types) == 3
+
+        mixed = (
+            UNIT_INPUT.replace("tensor<3x4xf32>", "tensor<6x4xf32>")
+            .replace("tensor<2x3x4xf32>", "tensor<2x6x4xf32>")
+            .replace("1x3x4", "1x2x3x4")
+            .replace("[[0,1],[2]]", "[[0,1,2],[3]]")
+        )
+        module = apply(mixed, preserve_input_unit_dims=True)
+        (generic,) = operations(module, "linalg.generic")
+        assert list(generic.inputs[0].type.shape) == [1, 2, 3, 4]
+
+        nonbroadcast = (
+            UNIT_INPUT.replace("tensor<2x3x4xf32>", "tensor<3x4xf32>")
+            .replace("affine_map<(b,i,j)->(i,j)>", "affine_map<(i,j)->(i,j)>")
+            .replace("affine_map<(b,i,j)->(b,i,j)>", "affine_map<(i,j)->(i,j)>")
+            .replace('["parallel", "parallel", "parallel"]', '["parallel", "parallel"]')
+        )
+        assert str(apply(nonbroadcast, preserve_input_unit_dims=True)) == str(
+            apply(nonbroadcast)
+        )
+
+        internal = (
+            COLLAPSE.replace("2x3x4", "1x3x4")
+            .replace("6x4", "3x4")
+            .replace("6x5", "3x5")
+            .replace("2x3x5", "1x3x5")
+            .replace("[2,3,5]", "[1,3,5]")
+        )
+        assert str(apply(internal, preserve_input_unit_dims=True)) == str(
+            apply(internal)
+        )
+        result_unit = (
+            TRANSPOSE.replace("6x4", "3x4")
+            .replace("4x6", "4x3")
+            .replace("4x2x3", "4x1x3")
+            .replace("[4,2,3]", "[4,1,3]")
+        )
+        assert str(apply(result_unit, preserve_input_unit_dims=True)) == str(
+            apply(result_unit)
+        )
+
+        x = np.arange(12, dtype=np.float32).reshape(1, 3, 4) / 8
+        for preserve in (False, True):
+            runner, name = compile_payload(
+                UNIT_INPUT, schedule(preserve_input_unit_dims=preserve)
+            )
+            output = np.empty((2, 3, 4), dtype=np.float32)
+            runner.execute(name, [x, output])
+            np.testing.assert_array_equal(output, np.broadcast_to(-x, (2, 3, 4)))
+    print(
+        "Input unit views stay external without blocking internal or result expansion"
+    )
+
+
+# CHECK: Input unit views stay external without blocking internal or result expansion
+
+
 def test_scheduling_metadata_is_opaque():
     with ir.Context(), ir.Location.unknown():
         lh_dialects.register_and_load()
@@ -350,6 +466,7 @@ if __name__ == "__main__":
     test_structure()
     test_unsupported()
     test_named_transpose()
+    test_input_unit_dims()
     test_scheduling_metadata_is_opaque()
     test_numerics()
     test_normalization_schedule()
