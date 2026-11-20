@@ -67,7 +67,8 @@ def apply_subgraph_tiling(
 
     Reshape preparation, cast normalization and shared-producer isolation run
     before annotation-only tagging or tiling.
-    Checked embedding lookups are reserved as standalone kernels. Attention
+    Embedding lookups are reserved as standalone kernels and require in-range
+    token IDs because XeVM does not lower their assertions. Attention
     is claimed before reductions so softmax stays with its contractions.
     Normalization reductions are claimed before GEMM to materialize their
     outputs once, including when shared by multiple projections.
@@ -91,8 +92,11 @@ def apply_subgraph_tiling(
             ir.IntegerAttr.get(ir.IntegerType.get_signless(64), 256),
         )
         sizes = transform.merge_handles([leading, width])
-        tiled = structured.TileUsingForallOp(anchor, tile_sizes=sizes).tiled_op
+        tiled, wg_loop = structured.TileUsingForallOp(anchor, tile_sizes=sizes).results
         transform_ext.rewrite_checked_embedding(tiled)
+        # We currently cannot lower cf.asserts to xegpu so we remove them here.
+        transform_ext.remove_asserts(wg_loop)
+        transform.apply_dce(wg_loop)
         transform.yield_()
 
     with lh_transform.foreach(_subgraph_anchors(func, "reduction")) as anchor:
