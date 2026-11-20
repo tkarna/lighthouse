@@ -186,9 +186,12 @@ def _tile_reduction_body(wg_loop, reduction_tile):
     anytype = transform.AnyOpType.get()
 
     def fuse_producers(target, loop):
+        # A preceding reduction and its producers belong to a different loop.
         producers = transform_ext.filter_by_name(
             transform_ext.filter_elementwise(
-                transform_ext.trace_producers(target, scope=wg_loop)
+                transform_ext.trace_producers(
+                    target, scope=wg_loop, stop_at_reductions=True
+                )
             ),
             "linalg.generic",
         )
