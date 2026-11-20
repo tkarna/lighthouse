@@ -75,8 +75,8 @@ with ir.Context(), ir.Location.unknown():
     module = apply(SOURCE)
     text = str(module)
     assert "linalg.generic" not in text
-    assert text.count("cf.assert") == 2
-    assert text.index("negative token id") < text.index("vector.transfer_read")
+    assert "cf.assert" not in text
+    assert "arith.cmpi" not in text
     assert "vector<256xbf16>" in text
 
     PassManager.parse(
