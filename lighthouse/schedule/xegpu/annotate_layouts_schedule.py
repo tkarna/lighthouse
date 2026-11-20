@@ -442,7 +442,7 @@ def annotate_elementwise(gpu_func: ir.Value[transform.AnyOpType]):
     )
     transform.match_operation_empty(unsupported)
     # Check that there's at least one store op to anchor.
-    stores = lh_transform.match_op(gpu_func, "xegpu.store_nd")
+    stores = lh_transform.match_op(gpu_func, ["xegpu.store_nd", "xegpu.store"])
     transform_ext.extract_handle(stores, 0, silenceable=True)
     with lh_transform.foreach(stores) as store:
         wg_tile, sg_tile = transform_ext.infer_xegpu_elementwise_params(store)
