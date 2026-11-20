@@ -235,8 +235,11 @@ def _prepare_iteration_spaces(func):
     """Prepare linalg iteration spaces for subgraph tagging and WG tiling.
 
     Fold reshape boundaries into linalg loops so WG producer fusion can reach
-    and tile the producing computation.
+    and tile the producing computation. Keep concat-only singleton axes out
+    of the resulting iteration spaces.
     """
+    func = transform_ext.fold_unit_dims_through_concat(func)
+    lh_transform.cleanup(func)
     for i in range(3):
         # Alternate expansion with empty-tensor folding and canonicalization
         # to expose further reshape folds.
