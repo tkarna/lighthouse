@@ -144,12 +144,20 @@ def apply_subgraph_tiling(
 
         wg_loop = _tile_subgraph(anchor, producers, consumers, [wg_m, wg_n])
 
-        # k loop tiling
+        # Tile the GEMM reduction dimension and fuse operand transposes already
+        # in this workgroup. Keep accumulator initialization outside the K loop.
         wg_matmul = match(wg_loop, ops={"linalg.matmul"})
-        lh_transform.tile(
-            wg_matmul,
-            tile_sizes=[0, 0, k_tile],
-            fuse_producers=True,
+        transposes = transform_ext.filter_by_name(
+            transform_ext.trace_producers(wg_matmul, scope=wg_loop),
+            "linalg.transpose",
+        )
+        _, k_loop = structured.TileUsingForOp(wg_matmul, sizes=[0, 0, k_tile]).results
+        anytype = transform.AnyOpType.get()
+        structured.structured_fuse_into_containing_op(
+            anytype,
+            anytype,
+            producer_op=transposes,
+            containing_op=k_loop,
         )
         lh_transform.cleanup(wg_loop)
         transform.yield_()
