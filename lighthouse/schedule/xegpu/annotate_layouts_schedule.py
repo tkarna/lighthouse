@@ -348,49 +348,45 @@ def annotate_attention(
     store_op = transform_ext.extract_handle(store_nd_ops, 0, silenceable=True)
     xegpu.set_anchor_layout(store_op, sg_layout=out_sg_layout, sg_data=out_sg_data)
 
-    # Set layout for xegpu.load_nd ops (3 total: Q, K, V)
-    load_nd_ops = lh_transform.match_op(gpu_func, "xegpu.load_nd")
+    # Follow the DPAS operands: auxiliary loads (e.g. a mask) can precede K or V.
+    dpas_ops = lh_transform.match_op(gpu_func, "xegpu.dpas")
+    qk_dpas_op = transform_ext.extract_handle(dpas_ops, 0, silenceable=True)
+    pv_dpas_op = transform_ext.extract_handle(dpas_ops, 1, silenceable=True)
+    anyvalue = transform.AnyValueType.get()
+    q_load = xegpu.get_load_op(transform.get_operand(anyvalue, qk_dpas_op, [0]))
+    k_load = xegpu.get_load_op(transform.get_operand(anyvalue, qk_dpas_op, [1]))
+    v_load = xegpu.get_load_op(transform.get_operand(anyvalue, pv_dpas_op, [1]))
 
-    # First load_nd: Q layout
-    load_op = transform_ext.extract_handle(load_nd_ops, 0, silenceable=True)
     q_load_inst_data = [16, 16]
     if force_q_load_tile is not None:
         assert len(force_q_load_tile) == 2, "force_q_load_tile must have length 2"
         q_load_inst_data = list(force_q_load_tile)
     xegpu.set_anchor_layout(
-        load_op,
+        q_load,
         sg_layout=out_sg_layout,
         sg_data=out_sg_data,
         inst_data=q_load_inst_data,
     )
 
-    # Second load_nd: K layout
-    load_op = transform_ext.extract_handle(load_nd_ops, 1, silenceable=True)
     xegpu.set_anchor_layout(
-        load_op,
+        k_load,
         sg_layout=kv_sg_layout,
         sg_data=kv_load_sg_data,
         order=k_load_order,
     )
 
-    # Third load_nd: V layout
-    load_op = transform_ext.extract_handle(load_nd_ops, 2, silenceable=True)
     v_load_inst_data = [32, 32]
     if force_v_load_tile is not None:
         assert len(force_v_load_tile) == 2, "force_v_load_tile must have length 2"
         v_load_inst_data = list(force_v_load_tile)
     xegpu.set_anchor_layout(
-        load_op,
+        v_load,
         sg_layout=kv_sg_layout,
         sg_data=kv_load_sg_data,
         inst_data=v_load_inst_data,
     )
 
-    # Set layout for xegpu.dpas ops (2 total: Q@K^T and P@V)
-    dpas_ops = lh_transform.match_op(gpu_func, "xegpu.dpas")
-
     # Layouts for the Q@K^T dpas:
-    qk_dpas_op = transform_ext.extract_handle(dpas_ops, 0, silenceable=True)
     # Index 0: Q layout
     xegpu.set_anchor_layout(
         qk_dpas_op,
@@ -414,7 +410,6 @@ def annotate_attention(
     )
 
     # Layouts for the P@V dpas:
-    pv_dpas_op = transform_ext.extract_handle(dpas_ops, 1, silenceable=True)
     # Index 0: QK (attention weights) layout
     xegpu.set_anchor_layout(
         pv_dpas_op,
