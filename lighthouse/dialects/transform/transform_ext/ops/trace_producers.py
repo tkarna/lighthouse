@@ -4,6 +4,9 @@ from mlir.dialects.transform import DiagnosedSilenceableFailure
 from collections import deque
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
+from lighthouse.dialects.transform.transform_ext.ops.filter_reduction_ops import (
+    is_reduction_op,
+)
 from lighthouse.utils.mlir import defining_op
 from lighthouse.dialects.transform.transform_ext.utils.subgraph_analysis import (
     subgraph_id,
@@ -26,12 +29,16 @@ class TraceProducersOp(TransformExtensionDialect.Operation, name="trace_producer
         subgraph: Optional single membership id.
         order: "closest-first" (BFS), or "reverse-topological" to fuse all
             consumers before their shared producers.
+        stop_at_reductions: Exclude reductions and do not traverse their operands.
     Returns:
         Handles to admissible producer ops in the requested order.
     """
 
     target: ext.Operand[transform.AnyOpType]
     order: ir.StringAttr = ext.attribute()
+    stop_at_reductions: ir.IntegerAttr = ext.attribute(
+        default_factory=lambda: ir.IntegerAttr.get(ir.IntegerType.get_signless(1), 0)
+    )
     scope: ext.Operand[transform.AnyOpType] | None = None
     subgraph: ext.Operand[transform.AnyParamType] | None = None
     ops: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
@@ -72,8 +79,12 @@ class TraceProducersOp(TransformExtensionDialect.Operation, name="trace_producer
 
                     scope.operation.walk(collect)
 
+            stop_at_reductions = op.stop_at_reductions.value
+
             def admissible(owner):
                 if owner is None or (allowed is not None and owner not in allowed):
+                    return False
+                if stop_at_reductions and is_reduction_op(owner):
                     return False
                 if id is not None:
                     member_id = subgraph_id(owner)
@@ -151,6 +162,7 @@ def trace_producers(
     subgraph: ir.Value[transform.AnyParamType] | None = None,
     *,
     order: str = "closest-first",
+    stop_at_reductions: bool = False,
 ) -> ir.Value:
     """
     snake_case wrapper to create a TraceProducersOp.
@@ -160,9 +172,16 @@ def trace_producers(
         scope: Optional containers bounding traversal.
         subgraph: Optional membership id bounding linalg producers.
         order: "closest-first" or "reverse-topological".
+        stop_at_reductions: Exclude reductions and do not traverse their operands.
     Returns:
         Handles to admissible producers in the requested order.
     """
     return TraceProducersOp(
-        target=target, scope=scope, subgraph=subgraph, order=ir.StringAttr.get(order)
+        target=target,
+        scope=scope,
+        subgraph=subgraph,
+        order=ir.StringAttr.get(order),
+        stop_at_reductions=ir.IntegerAttr.get(
+            ir.IntegerType.get_signless(1), int(stop_at_reductions)
+        ),
     ).ops
