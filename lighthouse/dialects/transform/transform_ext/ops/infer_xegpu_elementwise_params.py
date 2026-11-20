@@ -53,7 +53,7 @@ class InferXeGPUElementwiseParamsOp(
     iteration order. The result indexing map must be a permutation. Zero marks
     an untiled dimension; sg_tile is left empty at this stage.
 
-    For a vector.transfer_write, xegpu.load_nd or xegpu.store_nd anchor, wg_tile
+    For a vector transfer write, XeGPU block load or XeGPU store anchor, wg_tile
     is the full vector shape and sg_tile distributes its two innermost non-unit
     dimensions over subgroups using tiles of at most 32 by 32 elements.
 
@@ -86,7 +86,13 @@ class InferXeGPUElementwiseParamsOp(
                 return DiagnosedSilenceableFailure.SilenceableFailure
             target = targets[0]
             if isinstance(
-                target, (vector.TransferWriteOp, xegpu.LoadNdOp, xegpu.StoreNdOp)
+                target,
+                (
+                    vector.TransferWriteOp,
+                    xegpu.LoadNdOp,
+                    xegpu.StoreNdOp,
+                    xegpu.StoreScatterOp,
+                ),
             ):
                 value = (
                     target.results[0]
