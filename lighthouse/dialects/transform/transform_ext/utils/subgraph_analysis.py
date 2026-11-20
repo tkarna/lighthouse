@@ -255,8 +255,9 @@ def _match_elementwise(
 
     The anchor is the first linalg op in block order from which all linalg
     members are reachable through producer-to-consumer edges. Its consumers
-    can then be fused forward into its tiled loop. Components without such
-    an anchor are not matched.
+    can then be fused forward into its tiled loop. If no single anchor covers
+    the component, match from the seed and stop at joins with another unclaimed
+    producer. Later matches treat the already claimed results as inputs.
 
     Args:
         op: Operation whose component to match.
@@ -308,7 +309,14 @@ def _match_elementwise(
         reached = _forward_closure(anchor, component)
         if all(o in reached for o in linalg_ops):
             return [(component, anchor)]
-    return []
+    if op not in linalg_ops:
+        return []
+    members = {op}
+    for candidate in component:
+        producers = {_producer(value) for value in candidate.operands} & candidates
+        if producers & members and producers <= members:
+            members.add(candidate)
+    return [([candidate for candidate in component if candidate in members], op)]
 
 
 def _match_reduction(

@@ -201,7 +201,7 @@ func.func @payload(%condition: i1) {
 test_multiblock_rejection()
 
 
-def test_shared_input_views():
+def test_shared_input_views(materialize_bias=False):
     branches = []
     for name in ("q", "k"):
         branches.append(f"""
@@ -232,12 +232,31 @@ def test_shared_input_views():
 """)
     with ir.Context(), ir.Location.unknown():
         lh_dialects.register_and_load()
+        bias = (
+            """
+  %bias_empty = tensor.empty() : tensor<1x3xf32>
+  %bias_value = linalg.generic {
+      indexing_maps=[affine_map<(i,j)->(i,j)>, affine_map<(i,j)->(i,j)>],
+      iterator_types=["parallel","parallel"]}
+      ins(%bias : tensor<1x3xf32>) outs(%bias_empty : tensor<1x3xf32>) {
+    ^bb0(%x: f32, %o: f32):
+      %cos = math.cos %x : f32
+      linalg.yield %cos : f32
+  } -> tensor<1x3xf32>
+"""
+            if materialize_bias
+            else ""
+        )
+        bias_source = "%bias_value" if materialize_bias else "%bias"
         payload = ir.Module.parse(
             """
 func.func @payload(%q: tensor<2x3xf32>, %k: tensor<2x3xf32>,
                    %bias: tensor<1x3xf32>)
     -> (tensor<2x3xf32>, tensor<2x3xf32>) {
-  %bias_view = tensor.collapse_shape %bias [[0,1]]
+"""
+            + bias
+            + f"""
+  %bias_view = tensor.collapse_shape {bias_source} [[0,1]]
       : tensor<1x3xf32> into tensor<3xf32>
 """
             + "".join(branches)
@@ -254,17 +273,25 @@ func.func @payload(%q: tensor<2x3xf32>, %k: tensor<2x3xf32>,
         assert payload.operation.verify()
         ops = list(payload.body.operations[0].regions[0].blocks[0].operations)
         id_attr = "transform_ext.subgraph_id"
-        assert id_attr not in ops[0].attributes
         generics = [op for op in ops if op.operation.name == "linalg.generic"]
+        if materialize_bias:
+            bias_generic, *generics = generics
+            bias_id = ir.IntegerAttr(bias_generic.attributes[id_attr]).value
+            assert "transform_ext.subgraph_anchor" in bias_generic.attributes
+            assert ir.IntegerAttr(ops[2].attributes[id_attr]).value == bias_id
+        else:
+            assert id_attr not in ops[0].attributes
         ids = [ir.IntegerAttr(op.attributes[id_attr]).value for op in generics]
         assert ids[0] == ids[1] != ids[2] == ids[3]
+        if materialize_bias:
+            assert bias_id not in ids
         assert all(
             "transform_ext.subgraph_anchor" in op.attributes
             for op in (generics[0], generics[2])
         )
         views = [
             op
-            for op in ops[1:]
+            for op in ops[(3 if materialize_bias else 1) :]
             if op.operation.name in ("tensor.collapse_shape", "tensor.expand_shape")
         ]
         assert len(views) == 4
@@ -274,9 +301,14 @@ func.func @payload(%q: tensor<2x3xf32>, %k: tensor<2x3xf32>,
             ids[2],
             ids[2],
         ]
-    print("Shared input views do not merge independent elementwise subgraphs")
+    if materialize_bias:
+        print("Shared computed values form a separate subgraph")
+    else:
+        print("Shared input views do not merge independent elementwise subgraphs")
 
 
 # CHECK: Shared input views do not merge independent elementwise subgraphs
+# CHECK: Shared computed values form a separate subgraph
 
 test_shared_input_views()
+test_shared_input_views(materialize_bias=True)
