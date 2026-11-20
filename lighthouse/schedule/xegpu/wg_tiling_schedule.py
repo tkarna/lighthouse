@@ -63,12 +63,12 @@ def apply_subgraph_tiling(
     force_wg_subtile: list[int] | None = None,
     force_reduction_tile: list[int] | None = None,
 ) -> ir.Operation:
-    """Partition attention, reduction, GEMM and elementwise subgraphs and tile
-    each into its own workgroup-parallel scf.forall, i.e. its own kernel.
+    """Partition and tile Linalg computations into XeGPU workgroup kernels.
 
     Reshape preparation, cast normalization and shared-producer isolation run
     before annotation-only tagging or tiling.
-    Attention is claimed first so softmax stays with its contractions.
+    Checked embedding lookups are reserved as standalone kernels. Attention
+    is claimed before reductions so softmax stays with its contractions.
     Normalization reductions are claimed before GEMM to materialize their
     outputs once, including when shared by multiple projections.
     GEMM subgraphs then claim their epilogue chains; the
@@ -80,9 +80,20 @@ def apply_subgraph_tiling(
     func = _prepare_iteration_spaces(func)
     with ir.InsertionPoint(transform.apply_patterns(func).patterns):
         structured.apply_patterns_linalg_swap_extract_slice_with_fill()
-    kinds = ["attention", "reduction", "gemm", "elementwise"]
+    kinds = ["checked_embedding", "attention", "reduction", "gemm", "elementwise"]
     func = transform_ext.prepare_subgraphs(func, kinds)
     transform_ext.tag_subgraphs(func, kinds)
+
+    with lh_transform.foreach(_subgraph_anchors(func, "checked_embedding")) as anchor:
+        leading = transform_ext.get_leading_unit_tile_sizes(anchor)
+        width = transform.param_constant(
+            transform.AnyParamType.get(),
+            ir.IntegerAttr.get(ir.IntegerType.get_signless(64), 256),
+        )
+        sizes = transform.merge_handles([leading, width])
+        tiled = structured.TileUsingForallOp(anchor, tile_sizes=sizes).tiled_op
+        transform_ext.rewrite_checked_embedding(tiled)
+        transform.yield_()
 
     with lh_transform.foreach(_subgraph_anchors(func, "reduction")) as anchor:
         producers, _ = transform_ext.get_subgraph_ops(anchor)
