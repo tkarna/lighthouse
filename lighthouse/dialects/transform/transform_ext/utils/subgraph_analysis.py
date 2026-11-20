@@ -24,6 +24,9 @@ from lighthouse.dialects.transform.transform_ext.ops.filter_elementwise import (
 from lighthouse.dialects.transform.transform_ext.ops.filter_reduction_ops import (
     is_reduction_op,
 )
+from lighthouse.dialects.transform.transform_ext.ops.rewrite_checked_embedding import (
+    match_checked_embedding,
+)
 from lighthouse.utils.mlir import opview
 from lighthouse.dialects.transform.transform_ext.ops.filter_contraction_ops import (
     is_contraction_op,
@@ -540,7 +543,17 @@ def _match_attention(root, block_ops, is_claimed=is_tagged):
     return [(members, anchor)]
 
 
+def _match_checked_embedding(op, _block_ops, is_claimed=is_tagged):
+    """Reserve each supported checked lookup as a standalone subgraph."""
+    if is_claimed(op) or match_checked_embedding(op) is None:
+        return []
+    if op.results[0].type.shape[-1] % 256:
+        return []
+    return [([op], op)]
+
+
 SUBGRAPH_MATCHERS: dict[str, Callable] = {
+    "checked_embedding": _match_checked_embedding,
     "attention": _match_attention,
     "reduction": _match_reduction,
     "gemm": _match_gemm,
