@@ -61,7 +61,7 @@ class AnnotateEpilogueLoadsOp(
     """Assign store-derived layouts to ordinary and broadcast epilogue loads.
 
     Walks backwards through shape-preserving arithmetic/math from annotated
-    store_nd ops. Same-shaped xegpu.load/load_nd ops get the store layout.
+    block or scattered stores. Same-shaped xegpu.load/load_nd ops get the store layout.
     A broadcast adding leading dimensions gets the store layout on its result
     and a slice of that layout on its directly feeding load and source operand.
     This covers elementwise inputs, 1D bias, and 2D RoPE tables without crossing
@@ -84,11 +84,11 @@ class AnnotateEpilogueLoadsOp(
             planned = {}
             for store in state.get_payload_ops(op.target):
                 if (
-                    not isinstance(store, xegpu.StoreNdOp)
+                    not isinstance(store, (xegpu.StoreNdOp, xegpu.StoreScatterOp))
                     or "layout" not in store.attributes
                 ):
                     store.location.emit_error(
-                        "annotate_epilogue_loads: expected annotated store_nd"
+                        "annotate_epilogue_loads: expected an annotated XeGPU store"
                     )
                     return DiagnosedSilenceableFailure.DefiniteFailure
                 for target, name, layout in _collect_epilogue_load_annotations(store):
