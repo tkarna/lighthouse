@@ -112,7 +112,9 @@ def test(source, load_name, count):
     assert before == str(module)
 
 
-def test_elementwise_schedule(source, has_broadcast, expected_layout=None):
+def test_elementwise_schedule(
+    source, has_broadcast, expected_layout=None, store_name="xegpu.store_nd"
+):
     module = ir.Module.parse(source)
     with schedule_boilerplate() as (schedule, sequence):
         gpu_func = lh_transform.match_op(sequence.bodyTarget, "gpu.func")
@@ -120,7 +122,7 @@ def test_elementwise_schedule(source, has_broadcast, expected_layout=None):
         transform.yield_()
     schedule.body.operations[0].apply(module.operation)
     assert module.operation.verify()
-    (store,) = operations(module, "xegpu.store_nd")
+    (store,) = operations(module, store_name)
     layout = store.attributes["layout"]
     if expected_layout is not None:
         assert layout == ir.Attribute.parse(expected_layout)
@@ -250,6 +252,26 @@ with ir.Context(), ir.Location.unknown():
         expected_layout="#xegpu.layout<sg_layout=[1,4,8], sg_data=[1,32,32]>",
     )
     print("Large elementwise stores and broadcast loads use a 4x8 SG grid")
+    test_elementwise_schedule(
+        """
+        gpu.module @kernels {
+          gpu.func @positions(%out: memref<256xf32>) kernel
+              attributes {known_block_size = array<i32: 128, 1, 1>} {
+            %idx = vector.step : vector<256xindex>
+            %mask = arith.constant dense<true> : vector<256xi1>
+            %i = arith.index_cast %idx : vector<256xindex> to vector<256xi64>
+            %f = arith.sitofp %i : vector<256xi64> to vector<256xf32>
+            xegpu.store %f, %out[%idx], %mask
+              : vector<256xf32>, memref<256xf32>, vector<256xindex>, vector<256xi1>
+            gpu.return
+          }
+        }
+        """,
+        has_broadcast=False,
+        store_name="xegpu.store",
+        expected_layout="#xegpu.layout<sg_layout=[8], sg_data=[32]>",
+    )
+    print("Elementwise scatter stores can anchor the workgroup layout")
 
 
 # CHECK: Both RoPE table loads use sliced store layouts; unrelated loads are unchanged
@@ -261,3 +283,4 @@ with ir.Context(), ir.Location.unknown():
 # CHECK: Ordinary scattered loads inherit the store layout through math ops
 # CHECK: Conflicting layouts still fail without partial annotations
 # CHECK: Large elementwise stores and broadcast loads use a 4x8 SG grid
+# CHECK: Elementwise scatter stores can anchor the workgroup layout
