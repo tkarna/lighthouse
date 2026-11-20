@@ -186,9 +186,25 @@ def test_permuted_output():
     for split in (False, True):
         execute(apply(PERMUTED, split=split), [a, b], expected)
     print("Unequal concat pieces and permuted output maps are preserved")
+    filled = PERMUTED.replace(
+        "    %v = linalg.generic",
+        """    %one = arith.constant 1.0 : f32
+    %init = linalg.fill ins(%one : f32) outs(%out : tensor<8x2xf32>)
+      -> tensor<8x2xf32>
+    %v = linalg.generic""",
+    ).replace("outs(%out : tensor<8x2xf32>) {", "outs(%init : tensor<8x2xf32>) {")
+    filled = filled.replace(
+        "      linalg.yield %n : f32",
+        "      %sum = arith.addf %n, %o : f32\n      linalg.yield %sum : f32",
+    )
+    module = apply(filled)
+    assert not operations(module, "tensor.concat")
+    execute(module, [a, b], expected + 1)
+    print("Concat output pieces preserve fill-initialized accumulators")
 
 
 # CHECK: Unequal concat pieces and permuted output maps are preserved
+# CHECK: Concat output pieces preserve fill-initialized accumulators
 
 
 def test_rejections():

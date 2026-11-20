@@ -213,6 +213,9 @@ def _build_slice_plan(value, offsets, sizes, block, cache) -> _Slice | None:
             start = end
         else:
             return None
+    elif isinstance(op, linalg.FillOp):
+        plan.kind = "clone"
+        plan.operands = (op.inputs[0], _Slice(op.outputs[0], offsets, sizes, "empty"))
     elif isinstance(op, (linalg.GenericOp, linalg.TransposeOp)):
         if isinstance(op, linalg.GenericOp):
             maps = _generic_maps(op)
@@ -384,7 +387,7 @@ class SplitConcatOutputOp(
 
     The transform propagates static rectangular slices backward through
     tensor.concat, rank-preserving unit-stride tensor.extract_slice, parallel
-    linalg.generic ops with projected-permutation maps, and linalg.transpose.
+    linalg.generic ops with projected-permutation maps, fills, and transposes.
     Slices reach the WG input tensors instead of becoming register shuffles.
     Scalar bodies and their arithmetic ordering are preserved.
 
