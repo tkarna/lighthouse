@@ -63,6 +63,7 @@ class JITFunction:
         n_outputs: Number of last N outputs to return.
             Used to skip extra torch-mlir prepended results that might not
             be necessary.
+        inputs: Expected input metadata in compiled entry-point order.
         dump_obj_file: Target output object file.
     """
 
@@ -74,6 +75,8 @@ class JITFunction:
         entry_func: str = "main",
         n_outputs: int | None = None,
         dump_obj_file: str = "",
+        *,
+        inputs: Sequence[BufferMetadata],
     ):
         self.runner = Runner(
             module, mem_manager_cls=TorchMemoryManager, shared_libs=shared_libs
@@ -81,6 +84,7 @@ class JITFunction:
         if dump_obj_file:
             self.runner.dump_object_file(dump_obj_file)
         self.entry_func = entry_func
+        self.inputs = tuple(inputs)
         self.results = results
         self.n_outputs = n_outputs if n_outputs is not None else len(results)
 
@@ -134,19 +138,38 @@ class JITFunction:
         """
         Benchmark the jitted function.
 
-        If the model has parameters, the parameter tensors must be passed as
-        the first arguments to the function:
-
-            jit_fn.benchmark(*model.parameters(), *example_inputs, ...)
+        Pass tensors in the compiled entry-point order, which for a
+        torch.compile backend is the order supplied by Dynamo. Reuse the
+        arguments from the compiled call: metadata checks cannot distinguish
+        tensors with identical shape, dtype, and device.
 
         Args:
-            args: Torch model parameters and input tensors.
+            args: Input tensors in compiled entry-point order.
             nruns: Number of benchmark runs.
             nwarmup: Number of warmup runs.
 
         Returns:
             Array of execution times in seconds.
         """
+        if len(args) != len(self.inputs):
+            raise ValueError(
+                f"Expected {len(self.inputs)} benchmark inputs in compiled "
+                f"entry-point order, got {len(args)}"
+            )
+        for i, (arg, expected) in enumerate(zip(args, self.inputs)):
+            if not isinstance(arg, torch.Tensor):
+                raise TypeError(f"Benchmark input {i} must be a torch.Tensor")
+            if (list(arg.shape), arg.dtype, arg.device) != (
+                expected.shape,
+                expected.dtype,
+                expected.device,
+            ):
+                raise ValueError(
+                    f"Benchmark input {i}: expected shape {expected.shape}, "
+                    f"dtype {expected.dtype}, device {expected.device}; got shape "
+                    f"{list(arg.shape)}, dtype {arg.dtype}, device {arg.device}. "
+                    "Pass inputs in compiled entry-point order."
+                )
         all_tensors, _ = self._generate_input_args(*args)
         return self.runner.benchmark(all_tensors, nruns=nruns, nwarmup=nwarmup)
 
@@ -406,6 +429,12 @@ class MLIRBackend:
             entry_func=self.entry_func,
             n_outputs=n_fx_outputs,
             dump_obj_file=self.dump_obj_file,
+            inputs=[
+                BufferMetadata(
+                    shape=list(arg.shape), dtype=arg.dtype, device=arg.device
+                )
+                for arg in example_inputs
+            ],
         )
         self._last_jit_function = jit_fn
         return jit_fn
