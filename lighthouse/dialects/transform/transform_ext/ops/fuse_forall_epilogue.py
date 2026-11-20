@@ -461,7 +461,7 @@ def _offsets(tile, ivs):
     return result
 
 
-def _slice(value, tile, ivs):
+def _slice(value, tile, ivs, result_type=None):
     offsets = _offsets(tile, ivs)
     dynamic = [x for x in offsets if isinstance(x, ir.Value)]
     static = [
@@ -469,7 +469,7 @@ def _slice(value, tile, ivs):
         for x in offsets
     ]
     return tensor.ExtractSliceOp(
-        _type(value, tile),
+        _type(value, tile) if result_type is None else result_type,
         value,
         dynamic,
         [],
@@ -480,10 +480,66 @@ def _slice(value, tile, ivs):
     ).result
 
 
+def _same_offset(lhs, rhs):
+    if lhs == rhs:
+        return True
+    a, b = lhs.owner, rhs.owner
+    return (
+        isinstance(a, affine.AffineApplyOp)
+        and isinstance(b, affine.AffineApplyOp)
+        and a.map == b.map
+        and list(a.operands) == list(b.operands)
+    )
+
+
+def _reshape_output_fill_slice(loop, insert, nodes, outputs, tiles):
+    """Find an old output slice used only as a fully overwritten fill init."""
+    if len(nodes) != 1 or not isinstance(nodes[0], tensor.ExpandShapeOp):
+        return None
+    reshape = nodes[0]
+    if outputs != [reshape.result] or reshape.src != loop.results[0]:
+        return None
+    if not isinstance(loop.outputs[0].owner, tensor.EmptyOp):
+        return None
+    tile = tiles[reshape.result]
+    for use in insert.dest.uses:
+        candidate = use.owner.opview
+        if not isinstance(candidate, tensor.ExtractSliceOp):
+            continue
+        if (
+            candidate.source != insert.dest
+            or candidate.result.type != insert.source.type
+            or list(candidate.static_offsets) != list(insert.static_offsets)
+            or not all(
+                _same_offset(a, b)
+                for a, b in zip(candidate.offsets, insert.offsets, strict=True)
+            )
+            or list(candidate.static_sizes) != list(insert.static_sizes)
+            or list(candidate.static_strides) != list(insert.static_strides)
+            or candidate.sizes
+            or candidate.strides
+        ):
+            continue
+        shape = _shape(candidate.result)
+        if len(shape) > len(tile.sizes) or [s for s in shape if s != 1] != [
+            s for s in tile.sizes if s != 1
+        ]:
+            continue
+        users = list(candidate.result.uses)
+        if len(users) == 1:
+            fill = users[0].owner.opview
+            if isinstance(fill, linalg.FillOp) and list(fill.outputs) == [
+                candidate.result
+            ]:
+                return candidate
+    return None
+
+
 def _rewrite(loop, plan, rewriter):
     insert, tiles, nodes, operand_tiles, outputs = plan
     old_body = loop.regions[0].blocks[0]
     rank = len(loop.staticStep)
+    fill_slice = _reshape_output_fill_slice(loop, insert, nodes, outputs, tiles)
     with loop.location, ir.InsertionPoint(nodes[-1]):
         destinations = [
             tensor.EmptyOp(_shape(value), value.type.element_type).result
@@ -512,6 +568,14 @@ def _rewrite(loop, plan, rewriter):
         values[old_body.arguments[rank]] = loop.outputs[0]
         with ir.InsertionPoint(body):
             for op in list(old_body.operations)[:-1]:
+                if fill_slice is not None and op.operation == fill_slice.operation:
+                    values[fill_slice.result] = _slice(
+                        body.arguments[rank],
+                        tiles[outputs[0]],
+                        ivs,
+                        result_type=fill_slice.result.type,
+                    )
+                    continue
                 cloned = op.operation.clone()
 
                 def remap(operation):
@@ -646,6 +710,9 @@ class FuseForallEpilogueOp(
     inputs sliced to the same tile. Tiles must divide the full
     tensor and preserve complete slice/concat dimensions. The loop's final
     parallel_insert_slice may drop unit dimensions.
+
+    For a reshape-only output, a matching tile used solely as a fill
+    destination can write directly into the reshaped shared output.
 
     If `consumers` is given, only those ops are fused, and all of them must be;
     otherwise the transform is a silenceable failure. Without `consumers`, all

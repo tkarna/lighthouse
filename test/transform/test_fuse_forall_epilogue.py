@@ -15,6 +15,7 @@ from lighthouse.dialects.transform.transform_ext.ops.fuse_forall_epilogue import
 )
 from lighthouse.execution.runner import Runner
 from lighthouse.schedule import schedule_boilerplate
+from lighthouse.schedule.xegpu import lowering_common
 
 
 SOURCE = """
@@ -346,6 +347,42 @@ def test_numerics():
 # CHECK: Fused and unfused projection/RoPE match NumPy across tile shapes
 
 
+def test_reshape_only_output():
+    source = SOURCE.split("  %out = tensor.empty()")[0]
+    source = source.replace("2x4x4x4xf32", "2x4x16xf32").replace(
+        "[[0,1],[2,3]] output_shape [2,4,4,4]", "[[0,1],[2]] output_shape [2,4,16]"
+    )
+    source += "  return %heads : tensor<2x4x16xf32>\n}\n"
+    module = apply(source)
+    with schedule_boilerplate() as (schedule, sequence):
+        lowering_common.vectorize(sequence.bodyTarget)
+        lowering_common.bufferize(sequence.bodyTarget)
+        transform.yield_([])
+    schedule.body.operations[0].apply(module.operation)
+    assert module.operation.verify()
+    (loop,) = operations(module, "scf.forall")
+    (write,) = operations(loop, "vector.transfer_write")
+    assert tuple(write.base.type.shape) == (2, 4, 16)
+    assert not operations(loop, "memref.alloc")
+    assert not operations(loop, "memref.copy")
+    rng = np.random.default_rng(42)
+    x = rng.normal(size=(8, 3)).astype(np.float32)
+    w = rng.normal(size=(3, 16)).astype(np.float32)
+    unused = np.zeros((4, 4), dtype=np.float32)
+    execute(
+        source,
+        (2, 8),
+        True,
+        [x, w, unused, unused],
+        (x @ w).reshape(2, 4, 16),
+        result="heads",
+    )
+    print("Reshape-only GEMM epilogues store directly to the shared output")
+
+
+# CHECK: Reshape-only GEMM epilogues store directly to the shared output
+
+
 def test_rank_reduced_nested_consumer():
     module = ir.Module.parse("""
 func.func @heads(%x: tensor<2x2x4x4xf32>) -> tensor<8x8xf32> {
@@ -420,5 +457,6 @@ with ir.Context(), ir.Location.unknown():
     test_rejections()
     test_external_users()
     test_numerics()
+    test_reshape_only_output()
     test_rank_reduced_nested_consumer()
     test_grouped_head_offsets()
