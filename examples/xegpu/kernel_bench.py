@@ -78,7 +78,7 @@ from lighthouse.schedule.parameters import ScheduleParameters
 from lighthouse.pipeline.driver import TransformDriver
 from lighthouse.pipeline.helper import PipelineInterrupt
 from lighthouse.ingress.torch import gpu_backend, TargetDialect
-from lighthouse.ingress.torch.compile import TorchMemoryManager
+from lighthouse.ingress.torch.compile import JITFunction, TorchMemoryManager
 from lighthouse.schedule import xegpu
 from tune_matmul_costmodel import optimize_payload
 from csv_logger import CSVLogger
@@ -430,7 +430,7 @@ def infer_params_and_lower(
 
     Args:
         mod: The payload IR module.
-        torch_all_inputs: List of torch model parameters and input tensors.
+        torch_all_inputs: Input tensors in compiled entry-point order.
         kernel_metadata: Dictionary to store kernel metadata.
         benchmark: Whether to benchmark the lowered module.
         payload_func_name: Name of the payload function.
@@ -757,29 +757,44 @@ def lower_and_execute_benchmark(
         params_cache_json = f"kb_params_{stem}.json"
 
     # compile and execute the model with the MLIR backend
-    torch_all_inputs = [*torch_model.parameters(), *torch_inputs]
-    # get payload metadata as a side effect
     kernel_metadata = {}
-    fn_compile = partial(
-        infer_params_and_lower,
-        torch_all_inputs=torch_all_inputs,
-        kernel_metadata=kernel_metadata,
-        benchmark=True,
-        payload_func_name="main",
-        stop_at_stage=stop_at_stage,
-        params_cache_json=params_cache_json,
-        dump_parameters=dump_parameters,
-        enable_tuning=enable_tuning,
-        verbose=verbose,
-    )
-    backend = gpu_backend(
-        fn_compile,
-        device=torch.device("xpu"),
-        dialect=TargetDialect.LINALG_ON_TENSORS,
-        ir_context=ctx,
-        shared_libs=["libmlir_levelzero_runtime.so"],
-    )
-    torch_model.compile(dynamic=False, backend=backend)
+    timed_call: tuple[JITFunction, tuple[torch.Tensor, ...]] | None = None
+
+    def compile_for_benchmark(
+        graph: torch.fx.GraphModule, example_inputs: list[torch.Tensor]
+    ):
+        fn_compile = partial(
+            infer_params_and_lower,
+            torch_all_inputs=example_inputs,
+            kernel_metadata=kernel_metadata,
+            benchmark=True,
+            payload_func_name="main",
+            stop_at_stage=stop_at_stage,
+            params_cache_json=params_cache_json,
+            dump_parameters=dump_parameters,
+            enable_tuning=enable_tuning,
+            verbose=verbose,
+        )
+        backend = gpu_backend(
+            fn_compile,
+            device=torch.device("xpu"),
+            dialect=TargetDialect.LINALG_ON_TENSORS,
+            ir_context=ctx,
+            shared_libs=["libmlir_levelzero_runtime.so"],
+        )
+        jit_fn = backend(graph, example_inputs)
+
+        def capture_call(*args: torch.Tensor) -> list[torch.Tensor]:
+            nonlocal timed_call
+            if timed_call is not None:
+                raise RuntimeError("KernelBench timing requires a single compiled call")
+            # Keep the actual tensors in Dynamo order, not parameter registration order.
+            timed_call = (jit_fn, args)
+            return jit_fn(*args)
+
+        return capture_call
+
+    torch_model.compile(dynamic=False, backend=compile_for_benchmark)
 
     # Calling torch_model triggers torch.compile. In dump mode the pipeline
     # raises PipelineInterrupt at the requested stage (surfaced as a
@@ -859,9 +874,10 @@ def lower_and_execute_benchmark(
     if verbose > 0:
         print(f"{nruns=}")
         print(f"{nwarmup=}")
-    times = backend.jit_function.benchmark(
-        *torch_model.parameters(), *torch_inputs, nruns=nruns, nwarmup=nwarmup
-    )
+    if timed_call is None:
+        raise RuntimeError("No compiled call to benchmark")
+    jit_fn, args = timed_call
+    times = jit_fn.benchmark(*args, nruns=nruns, nwarmup=nwarmup)
     # compute achieved GFLOPS
     total_flops = kernel_metadata["total_flops"]
     read_bytes = kernel_metadata["read_bytes"]
