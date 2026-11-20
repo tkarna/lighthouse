@@ -1,15 +1,14 @@
 from mlir import ir
-from mlir.dialects import ext, transform, linalg, cf
+from mlir.dialects import ext, transform, linalg, cf, scf
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
 
 
 class RemoveAssertsOp(TransformExtensionDialect.Operation, name="remove_asserts"):
-    """Remove asserts within Linalg op bodies.
+    """Remove direct assertions in Linalg generic or forall bodies.
 
-    A workaround to enable vectorization of Linalg ops by removing
-    internal asserts.
+    The caller must ensure the assertions hold for all executions.
     """
 
     target: ext.Operand[transform.AnyOpType]
@@ -27,10 +26,10 @@ class RemoveAssertsOp(TransformExtensionDialect.Operation, name="remove_asserts"
 
             new_ops = []
             for target_op in target_ops:
-                if not isinstance(target_op.opview, linalg.GenericOp):
+                if not isinstance(target_op.opview, (linalg.GenericOp, scf.ForallOp)):
                     continue
                 updated = False
-                for body_op in target_op.opview.region.blocks[0].operations:
+                for body_op in list(target_op.regions[0].blocks[0].operations):
                     if isinstance(body_op, cf.AssertOp):
                         rewriter.erase_op(body_op)
                         updated = True
