@@ -58,6 +58,7 @@ from .ops.sfc_remap_forall import sfc_remap_forall
 from .ops.remove_asserts import remove_asserts
 from .ops.sink_extract_slice_into_loop import sink_extract_slice_into_loop
 from .ops.split_concat_output import split_concat_output
+from .ops.rewrite_checked_embedding import rewrite_checked_embedding
 from .ops.sink_normalization_past_contraction import (
     sink_normalization_past_contraction,
 )
@@ -118,6 +119,7 @@ __all__ = [
     "replace",
     "reverse_handles",
     "rewrite_attention_row_mask",
+    "rewrite_checked_embedding",
     "sfc_remap_forall",
     "sink_extract_slice_into_loop",
     "sink_normalization_past_contraction",
