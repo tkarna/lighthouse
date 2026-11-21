@@ -156,11 +156,11 @@ def transform_to_flash_attention(anytype, func, reduction_tile) -> ir.Operation:
 
 
 def enable_fastmath_optimizations(target: ir.Value[transform.AnyOpType]) -> None:
-    """Enable attention-specific floating-point optimizations.
+    """Enable the XeGPU vectorizer's floating-point optimizations.
 
-    Mark unflagged exponentials as fast to select native math, and mark
-    correction quotients with `reassoc,arcp` to permit exp(a-b) simplification.
-    Preserve fast-math flags already chosen by the payload.
+    Allow native approximate math for unflagged exponentials, sines, and
+    cosines. Mark correction quotients with `reassoc,arcp` to permit exp(a-b)
+    simplification. Preserve fast-math flags already chosen by the payload.
 
     Change vector maximum reductions to maxnum reductions. This permits a
     cheaper SPIR-V lowering.
@@ -172,7 +172,11 @@ def enable_fastmath_optimizations(target: ir.Value[transform.AnyOpType]) -> None
     fast = transform.param_constant(
         transform.AnyParamType.get(), ir.Attribute.parse("#arith.fastmath<afn>")
     )
-    unmarked = match(target, ops=["math.exp"], op_attrs={"fastmath": no_fastmath})
+    unmarked = match(
+        target,
+        ops=["math.exp", "math.sin", "math.cos"],
+        op_attrs={"fastmath": no_fastmath},
+    )
     transform.annotate(unmarked, "fastmath", param=fast)
 
     quotient_flags = transform.param_constant(
