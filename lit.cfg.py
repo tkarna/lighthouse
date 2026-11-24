@@ -74,7 +74,7 @@ for tool_dir, _, files in os.walk(project_root + "/tools"):
             config.substitutions.append((file, tool_path))
 
 # Set available features based on the presence of Python packages and git submodules.
-for pkg in ["torch", "torch_mlir", "mpi4py", "mpich", "impi-rt"]:
+for pkg in ["torch", "torch_mlir", "transformers", "mpi4py", "mpich", "impi-rt"]:
     if importlib.util.find_spec(pkg):
         config.available_features.add(pkg)
 
