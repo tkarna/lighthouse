@@ -296,47 +296,6 @@ def annotate_attention(
     # Q@K^T DPAS result tile shape
     qk_sg_data = [sg_rows, red_tile]
 
-    # Insert prefetches for the K and V tiles of the reduction loop. Each
-    # inserts nb_prefetch prefetches ahead of the loop plus one per iteration,
-    # at induction_var + nb_prefetch * step.
-    nb_prefetch = 1
-    if force_nb_prefetch is not None:
-        nb_prefetch = force_nb_prefetch
-    if nb_prefetch > 0:
-        prefetch_shape = [red_tile, d_head]
-        if force_prefetch_tile is not None:
-            assert len(force_prefetch_tile) == 2, (
-                "force_prefetch_tile must have length 2"
-            )
-            prefetch_sg_data = [int_to_param(x) for x in force_prefetch_tile]
-        else:
-            prefetch_sg_data = list(
-                transform_ext.infer_xegpu_prefetch_tile(prefetch_shape, device=device)
-            )
-        prefetch_inst_data = list(prefetch_sg_data)
-        prefetch_sg_layout, _ = transform_ext.compute_sg_layout(
-            prefetch_shape, prefetch_sg_data
-        )
-        # Add prefetch ops to loads within the reduction loop.
-        all_load_ops = lh_transform.match_op(gpu_func, "xegpu.load_nd")
-        with lh_transform.foreach(all_load_ops) as load_op:
-            # Loop over each load op.
-            parent_for = transform.get_parent_op(
-                anytype, load_op, op_name="scf.for", allow_empty_results=True
-            )
-            with lh_transform.foreach(parent_for):
-                # Add prefetch if parent is an scf.for loop.
-                add_prefetch(
-                    load_op,
-                    nb_prefetch,
-                    sg_layout=prefetch_sg_layout,
-                    sg_data=prefetch_sg_data,
-                    inst_data=prefetch_inst_data,
-                )
-                transform.yield_()
-            transform.yield_()
-        lh_transform.cleanup(gpu_func)
-
     # Compute output layout from tile sizes
     result_tile = transform.merge_handles([int_to_param(0), d_head])
     out_sg_layout, out_sg_data = transform_ext.compute_sg_layout(
@@ -431,6 +390,41 @@ def annotate_attention(
         sg_data=out_sg_data,
         index=2,
     )
+
+    # Only K/V loads have the [red_tile, d_head] prefetch shape; auxiliary
+    # loads such as an external mask can have a different tile orientation.
+    nb_prefetch = 1 if force_nb_prefetch is None else force_nb_prefetch
+    if nb_prefetch > 0:
+        prefetch_shape = [red_tile, d_head]
+        if force_prefetch_tile is not None:
+            assert len(force_prefetch_tile) == 2, (
+                "force_prefetch_tile must have length 2"
+            )
+            prefetch_sg_data = [int_to_param(x) for x in force_prefetch_tile]
+        else:
+            prefetch_sg_data = list(
+                transform_ext.infer_xegpu_prefetch_tile(prefetch_shape, device=device)
+            )
+        prefetch_inst_data = list(prefetch_sg_data)
+        prefetch_sg_layout, _ = transform_ext.compute_sg_layout(
+            prefetch_shape, prefetch_sg_data
+        )
+        kv_loads = transform.merge_handles([k_load, v_load])
+        with lh_transform.foreach(kv_loads) as load_op:
+            parent_for = transform.get_parent_op(
+                anytype, load_op, op_name="scf.for", allow_empty_results=True
+            )
+            with lh_transform.foreach(parent_for):
+                add_prefetch(
+                    load_op,
+                    nb_prefetch,
+                    sg_layout=prefetch_sg_layout,
+                    sg_data=prefetch_sg_data,
+                    inst_data=prefetch_inst_data,
+                )
+                transform.yield_()
+            transform.yield_()
+        lh_transform.cleanup(gpu_func)
 
 
 def annotate_elementwise(gpu_func: ir.Value[transform.AnyOpType]):
