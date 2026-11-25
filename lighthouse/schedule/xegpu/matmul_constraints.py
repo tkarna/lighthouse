@@ -1,4 +1,5 @@
 from collections import namedtuple
+from math import isqrt
 
 from .xegpu_specs import XeGPUSpecs
 
@@ -31,6 +32,18 @@ def check_wg_tile(M: int, N: int, wg_tile: tuple[int, int]) -> tuple[int, int]:
         raise ValueError("wg_tile_n does not divide N")
     wg_grid = (M // wg_tile[0], N // wg_tile[1])
     return wg_grid
+
+
+def sg_min_nb_threads(M: int, N: int) -> int:
+    """Minimum SG threads per WG for an (M, N) GEMM.
+
+    MIN_NB_THREADS is treated as a square SG grid; each grid dimension is capped
+    by the number of DPAS tiles the global shape has in that direction.
+    """
+    per_dim = isqrt(MIN_NB_THREADS)
+    cap_m = min(per_dim, max(1, M // DPAS.M))
+    cap_n = min(per_dim, max(1, N // DPAS.N))
+    return min(MIN_NB_THREADS, cap_m * cap_n)
 
 
 def check_sg_tile(
@@ -160,6 +173,13 @@ def check_prefetch_tile(
         raise ValueError(
             f"Number of threads for {name} prefetch ({nb_threads}) exceeds max threads ({gpu_specs.max_nb_threads})."
         )
+    if min_nb_threads is not None:
+        # Small data shapes cannot reach the minimum; require their maximum instead.
+        max_nb_threads = min(
+            (data_shape[0] // PFETCH_MIN_ROWS) * (data_shape[1] // PFETCH_MIN_COLS),
+            gpu_specs.max_nb_threads,
+        )
+        min_nb_threads = min(min_nb_threads, max_nb_threads)
     if min_nb_threads is not None and nb_threads < min_nb_threads:
         raise ValueError(
             f"Number of threads for {name} prefetch ({nb_threads}) is less than minimum threads ({min_nb_threads})."
@@ -244,7 +264,9 @@ def check_constraints(
 
     try:
         check_wg_tile(M, N, wg_tile)
-        check_sg_tile(wg_tile, sg_tile, gpu_specs, min_nb_threads=MIN_NB_THREADS)
+        check_sg_tile(
+            wg_tile, sg_tile, gpu_specs, min_nb_threads=sg_min_nb_threads(M, N)
+        )
         check_k_tile(K, k_tile)
         check_load_tile_a(load_tile_a, sg_tile, k_tile, transpose=transpose_a)
         check_load_tile_b(load_tile_b, sg_tile, k_tile, transpose=transpose_b)

@@ -17,6 +17,7 @@ from .matmul_constraints import (
     check_prefetch_tile_b,
     check_load_tile_a,
     check_load_tile_b,
+    sg_min_nb_threads,
 )
 from .matmul_constraints import (
     DPAS,
@@ -139,10 +140,8 @@ def generate_configs(
         }
 
     # define search space
-    wg_options = [64, 128, 256]
-    sg_options = [32, 64, 128]
-    sg_options_m = [16] + sg_options if M < 256 else sg_options
-    sg_options_n = [16] + sg_options if N < 256 else sg_options
+    wg_options = [8, 16, 32, 64, 128, 256]
+    sg_options = [8, 16, 32, 64, 128]
     if fixed_k_tile is not None:
         k_tile_options = [fixed_k_tile]
     else:
@@ -155,7 +154,7 @@ def generate_configs(
     if fixed_sg_tile is not None:
         sg_tiles = [fixed_sg_tile]
     else:
-        sg_tiles = product(sg_options_m, sg_options_n)
+        sg_tiles = product(sg_options, sg_options)
 
     # grid search
     valid_configs = []
@@ -476,7 +475,9 @@ def estimate_performance(
     if verbose:
         print_header("Subgroup Level", char="-", width=50)
 
-    sg_grid = check_sg_tile(wg_tile, sg_tile, gpu_specs, min_nb_threads=MIN_NB_THREADS)
+    sg_grid = check_sg_tile(
+        wg_tile, sg_tile, gpu_specs, min_nb_threads=sg_min_nb_threads(M, N)
+    )
     nb_sgs = sg_grid[0] * sg_grid[1]
     if verbose:
         print(
