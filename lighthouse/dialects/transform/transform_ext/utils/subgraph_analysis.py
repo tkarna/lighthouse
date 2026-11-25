@@ -27,7 +27,7 @@ from lighthouse.dialects.transform.transform_ext.ops.filter_reduction_ops import
 from lighthouse.dialects.transform.transform_ext.ops.rewrite_checked_embedding import (
     match_checked_embedding,
 )
-from lighthouse.utils.mlir import opview
+from lighthouse.utils.mlir import indexing_maps, opview
 from lighthouse.dialects.transform.transform_ext.ops.filter_contraction_ops import (
     is_contraction_op,
 )
@@ -117,12 +117,71 @@ def _is_elementwise_linalg(op: ir.Operation) -> bool:
     return _is_linalg(op) and is_elementwise(op)
 
 
+def _is_gemm_contraction(op: ir.Operation, block_ops, is_claimed) -> bool:
+    """Recognize contractions supported by the fixed (M, N, K) tiling path.
+
+    A row-indexed RHS must be a fusable broadcast of shared 2D weights;
+    independently varying per-row weights are batched matvecs, not 2D GEMMs.
+    """
+    if isinstance(op.opview, linalg.MatmulOp):
+        return True
+    if not isinstance(op.opview, linalg.GenericOp):
+        return False
+    generic = op.opview
+    if (
+        len(generic.inputs) != 2
+        or len(generic.outputs) != 1
+        or not linalg.isa_contraction_op(generic)
+    ):
+        return False
+    m, n, k = (ir.AffineExpr.get_dim(i) for i in range(3))
+    maps = indexing_maps(generic)
+    if maps == [
+        ir.AffineMap.get(3, 0, [m, k]),
+        ir.AffineMap.get(3, 0, [k, n]),
+        ir.AffineMap.get(3, 0, [m, n]),
+    ]:
+        return True
+    if maps != [
+        ir.AffineMap.get(3, 0, [m, k]),
+        ir.AffineMap.get(3, 0, [m, k, n]),
+        ir.AffineMap.get(3, 0, [m, n]),
+    ]:
+        return False
+
+    broadcast = _producer(generic.inputs[1])
+    if (
+        broadcast is None
+        or broadcast not in block_ops
+        or is_claimed(broadcast)
+        or not isinstance(broadcast.opview, linalg.GenericOp)
+        or not _is_elementwise_linalg(broadcast)
+    ):
+        return False
+    broadcast = broadcast.opview
+    if len(broadcast.inputs) != 1 or len(broadcast.outputs) != 1:
+        return False
+    b, r, c = (ir.AffineExpr.get_dim(i) for i in range(3))
+    if indexing_maps(broadcast) != [
+        ir.AffineMap.get(3, 0, [r, c]),
+        ir.AffineMap.get(3, 0, [b, r, c]),
+    ]:
+        return False
+    body = broadcast.regions[0].blocks[0]
+    operations = list(body.operations)
+    return (
+        len(operations) == 1
+        and isinstance(operations[0], linalg.YieldOp)
+        and list(operations[0].operands) == [body.arguments[0]]
+    )
+
+
 def _match_gemm(
     op: ir.Operation, block_ops, is_claimed=is_tagged
 ) -> list[tuple[list, ir.Operation]]:
     """Match the GEMM subgraph rooted at op in the operation block.
 
-    Starting from an unclaimed linalg.matmul, collect its single-use
+    Starting from an unclaimed named or equivalent generic GEMM, collect its single-use
     elementwise epilogue chain and use the last op of that chain as the
     anchor. If there is no such epilogue, the matmul itself is the anchor.
     Also collect elementwise producers such as fills, transposes and
@@ -137,7 +196,7 @@ def _match_gemm(
     to avoid tile-local reshape copies during bufferization.
 
     Args:
-        op: Candidate linalg.matmul operation.
+        op: Candidate named or generic contraction operation.
         block_ops: Operations of the block, in program order.
         is_claimed: Predicate identifying operations unavailable for matching.
             Defaults to checking existing subgraph tags.
@@ -148,7 +207,7 @@ def _match_gemm(
         to tile. Contains one tuple if a match is found, otherwise an empty
         list. Members are not necessarily in program order.
     """
-    if not isinstance(op.opview, linalg.MatmulOp) or is_claimed(op):
+    if is_claimed(op) or not _is_gemm_contraction(op, block_ops, is_claimed):
         return []
     members = [op]
     anchor = op
@@ -327,7 +386,7 @@ def _match_reduction(
 ) -> list[tuple[list, ir.Operation]]:
     """Match the reduction subgraph rooted at op in the operation block.
 
-    Starting from an unclaimed generic reduction, follow consumers through
+    Starting from an unclaimed non-contraction generic reduction, follow consumers through
     elementwise ops and further non-contraction generic reductions. Absorb
     eligible producers only when all their users are already in the subgraph,
     except that fills may be shared and isolated later during preparation.
@@ -353,6 +412,7 @@ def _match_reduction(
     if (
         not isinstance(op.opview, linalg.GenericOp)
         or not is_reduction_op(op)
+        or is_contraction_op(op)
         or is_claimed(op)
     ):
         return []

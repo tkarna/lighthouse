@@ -8,6 +8,7 @@ from mlir.dialects import transform
 import lighthouse.dialects as lh_dialects
 import lighthouse.transform as lh_transform
 from lighthouse.dialects.transform import transform_ext
+from lighthouse.dialects.transform.transform_ext.utils import subgraph_analysis as sa
 from lighthouse.schedule.builders import schedule_boilerplate
 
 
@@ -312,3 +313,116 @@ func.func @payload(%q: tensor<2x3xf32>, %k: tensor<2x3xf32>,
 
 test_shared_input_views()
 test_shared_input_views(materialize_bias=True)
+
+
+def test_contraction_is_not_reduction_root():
+    payload = """
+func.func @payload(%a: tensor<8x64xbf16>, %b: tensor<8x64x512xbf16>,
+                   %out: tensor<8x512xf32>) -> tensor<8x512xf32> {
+  %contract = linalg.generic {
+      indexing_maps = [affine_map<(m,n,k)->(m,k)>,
+                       affine_map<(m,n,k)->(m,k,n)>,
+                       affine_map<(m,n,k)->(m,n)>],
+      iterator_types = ["parallel", "parallel", "reduction"]}
+      ins(%a, %b : tensor<8x64xbf16>, tensor<8x64x512xbf16>)
+      outs(%out : tensor<8x512xf32>) {
+  ^bb0(%lhs: bf16, %rhs: bf16, %acc: f32):
+    %af = arith.extf %lhs : bf16 to f32
+    %bf = arith.extf %rhs : bf16 to f32
+    %mul = arith.mulf %af, %bf : f32
+    %sum = arith.addf %acc, %mul : f32
+    linalg.yield %sum : f32
+  } -> tensor<8x512xf32>
+  %result = linalg.generic {
+      indexing_maps = [affine_map<(m,n)->(m,n)>, affine_map<(m,n)->(m,n)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%contract : tensor<8x512xf32>) outs(%out : tensor<8x512xf32>) {
+  ^bb0(%x: f32, %o: f32):
+    %neg = arith.negf %x : f32
+    linalg.yield %neg : f32
+  } -> tensor<8x512xf32>
+  return %result : tensor<8x512xf32>
+}
+"""
+    with ir.Context(), ir.Location.unknown():
+        lh_dialects.register_and_load()
+        module = ir.Module.parse(payload)
+        block = module.body.operations[0].regions[0].blocks[0]
+        ops = [op.operation for op in block.operations]
+        contraction = ops[0]
+        assert sa.is_contraction_op(contraction)
+        assert not sa._match_reduction(contraction, ops, lambda _: False)
+        assert not sa._match_gemm(contraction, ops, lambda _: False)
+
+        shared_rhs = payload.replace(
+            "%b: tensor<8x64x512xbf16>", "%w: tensor<64x512xbf16>"
+        ).replace(
+            "  %contract = linalg.generic {",
+            """  %empty = tensor.empty() : tensor<8x64x512xbf16>
+  %b = linalg.generic {
+      indexing_maps = [affine_map<(m,k,n)->(k,n)>,
+                       affine_map<(m,k,n)->(m,k,n)>],
+      iterator_types = ["parallel", "parallel", "parallel"]}
+      ins(%w : tensor<64x512xbf16>) outs(%empty : tensor<8x64x512xbf16>) {
+  ^bb0(%x: bf16, %o: bf16):
+    linalg.yield %x : bf16
+  } -> tensor<8x64x512xbf16>
+  %contract = linalg.generic {""",
+        )
+        shared_module = ir.Module.parse(shared_rhs)
+        block = shared_module.body.operations[0].regions[0].blocks[0]
+        ops = [op.operation for op in block.operations]
+        broadcast, contraction, epilogue = ops[1:4]
+        matches = sa._match_gemm(contraction, ops, lambda _: False)
+        assert len(matches) == 1
+        members, anchor = matches[0]
+        assert broadcast in members and contraction in members
+        assert epilogue in members and anchor == epilogue
+        assert not sa._match_gemm(contraction, ops, lambda op: op == broadcast)
+
+        generalized_matmul = payload.replace(
+            "tensor<8x64x512xbf16>", "tensor<64x512xbf16>"
+        ).replace("affine_map<(m,n,k)->(m,k,n)>", "affine_map<(m,n,k)->(k,n)>")
+        matmul_module = ir.Module.parse(generalized_matmul)
+        block = matmul_module.body.operations[0].regions[0].blocks[0]
+        ops = [op.operation for op in block.operations]
+        assert sa._match_gemm(ops[0], ops, lambda _: False)
+
+        non_mac = shared_rhs.replace("arith.mulf %af, %bf", "arith.addf %af, %bf")
+        non_mac_module = ir.Module.parse(non_mac)
+        block = non_mac_module.body.operations[0].regions[0].blocks[0]
+        ops = [op.operation for op in block.operations]
+        assert sa.is_contraction_op(ops[2])
+        assert not sa._match_gemm(ops[2], ops, lambda _: False)
+
+        reduction_module = ir.Module.parse("""
+func.func @reduction(%a: tensor<8x64xf32>, %out: tensor<8xf32>)
+    -> tensor<8xf32> {
+  %sum = linalg.generic {
+      indexing_maps = [affine_map<(m,k)->(m,k)>, affine_map<(m,k)->(m)>],
+      iterator_types = ["parallel", "reduction"]}
+      ins(%a : tensor<8x64xf32>) outs(%out : tensor<8xf32>) {
+  ^bb0(%x: f32, %acc: f32):
+    %v = arith.addf %x, %acc : f32
+    linalg.yield %v : f32
+  } -> tensor<8xf32>
+  %result = linalg.generic {
+      indexing_maps = [affine_map<(m)->(m)>, affine_map<(m)->(m)>],
+      iterator_types = ["parallel"]}
+      ins(%sum : tensor<8xf32>) outs(%out : tensor<8xf32>) {
+  ^bb0(%x: f32, %o: f32):
+    %v = arith.negf %x : f32
+    linalg.yield %v : f32
+  } -> tensor<8xf32>
+  return %result : tensor<8xf32>
+}
+""")
+        block = reduction_module.body.operations[0].regions[0].blocks[0]
+        ops = [op.operation for op in block.operations]
+        assert not sa.is_contraction_op(ops[0])
+        assert sa._match_reduction(ops[0], ops, lambda _: False)
+    print("Generic contractions are not reduction roots")
+
+
+# CHECK: Generic contractions are not reduction roots
+test_contraction_is_not_reduction_root()
