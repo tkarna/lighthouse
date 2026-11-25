@@ -690,6 +690,123 @@ func.func @projection(%a: tensor<256x64xf32>, %b: tensor<64x256xf32>)
 # CHECK-NEXT: Expanded projection casts stay in the 2D GEMM epilogue
 
 
+def test_sliced_generic_contraction():
+    source = """
+func.func @projection(%hidden: tensor<8x128x64xbf16>,
+                      %weight: tensor<512x64xbf16>,
+                      %out: memref<8x1x512xbf16>) {
+  %zero = arith.constant 0.0 : f32
+  %slice = tensor.extract_slice %hidden[0, 127, 0] [8, 1, 64] [1, 1, 1]
+      : tensor<8x128x64xbf16> to tensor<8x1x64xbf16>
+  %a = tensor.collapse_shape %slice [[0, 1], [2]]
+      : tensor<8x1x64xbf16> into tensor<8x64xbf16>
+  %tw = tensor.empty() : tensor<64x512xbf16>
+  %t = linalg.transpose ins(%weight : tensor<512x64xbf16>)
+      outs(%tw : tensor<64x512xbf16>) permutation = [1, 0]
+  %binit = tensor.empty() : tensor<8x64x512xbf16>
+  %b = linalg.generic {
+      indexing_maps = [affine_map<(m,k,n)->(k,n)>, affine_map<(m,k,n)->(m,k,n)>],
+      iterator_types = ["parallel", "parallel", "parallel"]}
+      ins(%t : tensor<64x512xbf16>) outs(%binit : tensor<8x64x512xbf16>) {
+  ^bb0(%x: bf16, %o: bf16):
+    linalg.yield %x : bf16
+  } -> tensor<8x64x512xbf16>
+  %empty = tensor.empty() : tensor<8x512xf32>
+  %init = linalg.fill ins(%zero : f32) outs(%empty : tensor<8x512xf32>)
+      -> tensor<8x512xf32>
+  %contract = linalg.generic {
+      indexing_maps = [affine_map<(m,n,k)->(m,k)>,
+                       affine_map<(m,n,k)->(m,k,n)>,
+                       affine_map<(m,n,k)->(m,n)>],
+      iterator_types = ["parallel", "parallel", "reduction"]}
+      ins(%a, %b : tensor<8x64xbf16>, tensor<8x64x512xbf16>)
+      outs(%init : tensor<8x512xf32>) {
+  ^bb0(%x: bf16, %y: bf16, %acc: f32):
+    %xf = arith.extf %x : bf16 to f32
+    %yf = arith.extf %y : bf16 to f32
+    %product = arith.mulf %xf, %yf : f32
+    %sum = arith.addf %acc, %product : f32
+    linalg.yield %sum : f32
+  } -> tensor<8x512xf32>
+  %outinit = tensor.empty() : tensor<8x512xbf16>
+  %cast = linalg.generic {
+      indexing_maps = [affine_map<(m,n)->(m,n)>, affine_map<(m,n)->(m,n)>],
+      iterator_types = ["parallel", "parallel"]}
+      ins(%contract : tensor<8x512xf32>) outs(%outinit : tensor<8x512xbf16>) {
+  ^bb0(%x: f32, %o: bf16):
+    %v = arith.truncf %x : f32 to bf16
+    linalg.yield %v : bf16
+  } -> tensor<8x512xbf16>
+  %expanded = tensor.expand_shape %cast [[0, 1], [2]] output_shape [8, 1, 512]
+      : tensor<8x512xbf16> into tensor<8x1x512xbf16>
+  bufferization.materialize_in_destination %expanded in restrict writable %out
+      : (tensor<8x1x512xbf16>, memref<8x1x512xbf16>) -> ()
+  return
+}
+"""
+    module = run(
+        source,
+        lambda func: apply_subgraph_tiling(
+            func, force_wg_tile=[8, 256], force_k_tile=32
+        ),
+    )
+    (wg,) = [op for op in operations(module, "scf.forall") if op.name == "scf.forall"]
+    (materialize,) = operations(module, "bufferization.materialize_in_destination")
+    assert materialize.operands[0] == wg.results[0]
+    (k_loop,) = [op for op in operations(wg, "scf.for") if op.name == "scf.for"]
+    (contraction,) = operations(k_loop, "linalg.matmul")
+    assert list(contraction.operands[0].type.shape) == [8, 32]
+    assert list(contraction.operands[1].type.shape) == [32, 256]
+    assert list(contraction.operands[2].type.shape) == [8, 256]
+    assert len(operations(wg, "linalg.fill")) == 1
+    assert not operations(k_loop, "linalg.fill")
+    assert len(operations(wg, "arith.truncf")) == 1
+    assert not any(
+        list(op.results[0].type.shape) == [8, 32, 256]
+        for op in operations(k_loop, "linalg.generic")
+    )
+
+    f32_source = (
+        source.replace("bf16", "f32")
+        .replace("    %xf = arith.extf %x : f32 to f32\n", "")
+        .replace("    %yf = arith.extf %y : f32 to f32\n", "")
+        .replace("arith.mulf %xf, %yf", "arith.mulf %x, %y")
+        .replace("arith.truncf %x : f32 to f32", "arith.negf %x : f32")
+    )
+    module = run(
+        f32_source,
+        lambda func: apply_subgraph_tiling(
+            func, force_wg_tile=[8, 256], force_k_tile=32
+        ),
+    )
+    PassManager.parse(
+        "builtin.module(empty-tensor-to-alloc-tensor,"
+        "one-shot-bufferize{bufferize-function-boundaries "
+        "function-boundary-type-conversion=identity-layout-map},"
+        "scf-forall-to-for,buffer-deallocation-pipeline,"
+        "convert-linalg-to-loops,expand-strided-metadata,lower-affine,"
+        "convert-scf-to-cf,convert-math-to-llvm)"
+    ).run(module.operation)
+    Runner.make_function_callable(module, "projection")
+    PassManager.parse(
+        "builtin.module(finalize-memref-to-llvm,convert-to-llvm,"
+        "reconcile-unrealized-casts)"
+    ).run(module.operation)
+    rng = np.random.default_rng(42)
+    hidden = rng.normal(size=(8, 128, 64)).astype(np.float32)
+    weight = rng.normal(size=(512, 64)).astype(np.float32)
+    output = np.empty((8, 1, 512), dtype=np.float32)
+    Runner(module).execute("projection", [hidden, weight, output])
+    np.testing.assert_allclose(
+        output[:, 0, :], -(hidden[:, -1, :] @ weight.T), rtol=1e-4, atol=1e-4
+    )
+    print("Sliced contraction becomes a 2D matmul and matches NumPy")
+
+
+# CHECK-LABEL: test_sliced_generic_contraction
+# CHECK-NEXT: Sliced contraction becomes a 2D matmul and matches NumPy
+
+
 with ir.Context(), ir.Location.unknown():
     lh_dialects.register_and_load()
     for test in (
@@ -704,6 +821,7 @@ with ir.Context(), ir.Location.unknown():
         test_late_bias_relu_setup,
         test_mlp_accumulators,
         test_expanded_projection_cast,
+        test_sliced_generic_contraction,
     ):
         print(test.__name__)
         test()

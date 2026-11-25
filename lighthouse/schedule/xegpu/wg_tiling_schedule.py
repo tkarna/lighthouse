@@ -79,8 +79,12 @@ def apply_subgraph_tiling(
     """
 
     func = _prepare_iteration_spaces(func)
+    # Expansion can reintroduce singleton loops. Fold them before interpreting
+    # GEMM tiles as (M, N); cleanup also folds reshaped accumulator fills.
     with ir.InsertionPoint(transform.apply_patterns(func).patterns):
+        structured.apply_patterns_linalg_fold_unit_extent_dims_via_reshapes()
         structured.apply_patterns_linalg_swap_extract_slice_with_fill()
+    lh_transform.cleanup(func)
     kinds = ["checked_embedding", "attention", "reduction", "gemm", "elementwise"]
     func = transform_ext.prepare_subgraphs(func, kinds)
     transform_ext.tag_subgraphs(func, kinds)
@@ -144,8 +148,8 @@ def apply_subgraph_tiling(
 
     with lh_transform.foreach(_subgraph_anchors(func, "gemm")) as anchor:
         producers, consumers = transform_ext.get_subgraph_ops(anchor)
-        matmul_op = transform_ext.filter_by_name(
-            transform.merge_handles([anchor, producers]), "linalg.matmul"
+        matmul_op = transform_ext.filter_contraction_ops(
+            transform.merge_handles([anchor, producers])
         )
         params = transform_ext.infer_xegpu_gemm_params(
             matmul_op,
@@ -159,21 +163,40 @@ def apply_subgraph_tiling(
 
         wg_loop = _tile_subgraph(anchor, producers, consumers, [wg_m, wg_n])
 
-        # Tile the GEMM reduction dimension and fuse operand transposes already
-        # in this workgroup. Keep accumulator initialization outside the K loop.
-        wg_matmul = match(wg_loop, ops={"linalg.matmul"})
-        transposes = transform_ext.filter_by_name(
-            transform_ext.trace_producers(wg_matmul, scope=wg_loop),
-            "linalg.transpose",
+        # Fuse elementwise operand producers into the K loop, leaving the
+        # accumulator initialization outside it.
+        wg_matmul = transform_ext.filter_contraction_ops(
+            match(wg_loop, ops={"linalg.matmul", "linalg.generic"})
+        )
+        operand_producers = transform_ext.filter_elementwise(
+            transform_ext.filter_by_name(
+                transform_ext.trace_producers(
+                    wg_matmul, scope=wg_loop, order="reverse-topological"
+                ),
+                ["linalg.generic", "linalg.transpose"],
+            )
         )
         _, k_loop = structured.TileUsingForOp(wg_matmul, sizes=[0, 0, k_tile]).results
         anytype = transform.AnyOpType.get()
-        structured.structured_fuse_into_containing_op(
+        _, k_loop = structured.structured_fuse_into_containing_op(
             anytype,
             anytype,
-            producer_op=transposes,
+            producer_op=operand_producers,
             containing_op=k_loop,
         )
+        k_loop = transform_ext.fuse_elementwise_region(k_loop)
+        generic_contractions = transform_ext.filter_contraction_ops(
+            match(k_loop, ops={"linalg.generic"})
+        )
+        with lh_transform.foreach(generic_contractions) as generic:
+            # Fused arithmetic may have no named equivalent; keep it generic.
+            sequence = transform.SequenceOp(
+                transform.FailurePropagationMode.Suppress, [], generic
+            )
+            with ir.InsertionPoint(sequence.body):
+                structured.structured_specialize(anytype, sequence.bodyTarget)
+                transform.yield_()
+            transform.yield_()
         lh_transform.cleanup(wg_loop)
         transform.yield_()
     transform.apply_dce(func)
