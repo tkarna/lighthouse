@@ -3,19 +3,35 @@
 import math
 
 from mlir import ir
-from mlir.dialects import linalg, memref, scf, tensor, vector, xegpu
+from mlir.dialects import arith, linalg, memref, scf, tensor, vector, xegpu
 
 from lighthouse.utils.mlir import defining_op, dim_position
 
 
 def _source_shape(value: ir.Value) -> list[int] | None:
-    """Global shape feeding `value`, found by walking to its transfer_read."""
+    """Global shape feeding `value`, excluding fixed, dropped interior dims."""
     op = defining_op(value)
     seen: set[ir.Operation] = set()
     while op is not None and op not in seen:
         seen.add(op)
         if isinstance(op.opview, vector.TransferReadOp):
-            return list(ir.ShapedType(op.operands[0].type).shape)
+            read = op.opview
+            shape = list(ir.ShapedType(read.base.type).shape)
+            results = list(read.permutation_map.value.results)
+            if all(isinstance(expr, ir.AffineDimExpr) for expr in results):
+                kept = [expr.position for expr in results]
+                dropped = [i for i in range(len(shape)) if i not in kept]
+                if (
+                    kept == sorted(set(kept))
+                    and dropped
+                    and all(
+                        0 < i < len(shape) - 1
+                        and isinstance(read.indices[i].owner, arith.ConstantOp)
+                        for i in dropped
+                    )
+                ):
+                    return [shape[i] for i in kept]
+            return shape
         if len(op.operands) == 0:
             break
         op = defining_op(op.operands[0])
@@ -83,8 +99,9 @@ def _matmul_shape_and_transpose(
 def _root_memref_shape(value: ir.Value) -> list[int]:
     """Shape of the root memref backing `value`.
 
-    Walks through rank-preserving view ops (memref.subview / cast) so a tile
-    descriptor built on a workgroup subview still reports the global shape.
+    Walks through subviews and casts to recover global shapes for workgroup
+    tiles. Preserves rank-reduced 3D views of a fixed interior dimension that
+    span the other source dimensions.
     """
     op = defining_op(value)
     seen: set[ir.Operation] = set()
@@ -94,6 +111,18 @@ def _root_memref_shape(value: ir.Value) -> list[int]:
             break
         if len(op.operands) == 0:
             break
+        if isinstance(op.opview, memref.SubViewOp):
+            source_shape = list(ir.ShapedType(op.operands[0].type).shape)
+            result_shape = list(ir.ShapedType(value.type).shape)
+            if (
+                len(source_shape) == 3
+                and len(result_shape) == 2
+                and list(op.opview.static_sizes)
+                == [source_shape[0], 1, source_shape[2]]
+                and result_shape == [source_shape[0], source_shape[2]]
+                and op.opview.static_offsets[1] != ir.ShapedType.get_dynamic_size()
+            ):
+                return result_shape
         value = op.operands[0]
         op = defining_op(value)
     return list(ir.ShapedType(value.type).shape)

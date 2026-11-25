@@ -140,6 +140,38 @@ module {
 }
 """
 
+# A single sequence position is read across all batches. The dropped sequence
+# dimension must not contribute to M.
+VECTOR_CONTRACT_SLICED_M = """
+#map = affine_map<(d0, d1, d2) -> (d0, d2)>
+#map1 = affine_map<(d0, d1, d2) -> (d1, d2)>
+#map2 = affine_map<(d0, d1, d2) -> (d0, d1)>
+module {
+  func.func @main(%a: memref<8x256x128xbf16>, %b: memref<512x128xbf16>,
+                  %position: index) -> vector<8x256xf32> {
+    %pad = arith.constant 0.0 : bf16
+    %cst = arith.constant dense<0.0> : vector<8x256xf32>
+    %c0 = arith.constant 0 : index
+    %c255 = arith.constant 255 : index
+    %av = vector.transfer_read %a[%c0, %c255, %c0], %pad
+        {in_bounds = [true, true], permutation_map = #map}
+        : memref<8x256x128xbf16>, vector<8x32xbf16>
+    %bv = vector.transfer_read %b[%c0, %c0], %pad
+        {in_bounds = [true, true]}
+        : memref<512x128xbf16>, vector<256x32xbf16>
+    %c = vector.contract {indexing_maps = [#map, #map1, #map2],
+        iterator_types = ["parallel", "parallel", "reduction"],
+        kind = #vector.kind<add>} %av, %bv, %cst
+        : vector<8x32xbf16>, vector<256x32xbf16> into vector<8x256xf32>
+    return %c : vector<8x256xf32>
+  }
+}
+"""
+
+VECTOR_CONTRACT_DYNAMIC_POSITION = VECTOR_CONTRACT_SLICED_M.replace(
+    "%a[%c0, %c255, %c0]", "%a[%c0, %position, %c0]"
+)
+
 # xegpu.dpas at the xegpu level: operands trace back to create_nd_tdesc of the
 # global memrefs; the B operand goes through a vector.transpose.
 XEGPU_DPAS = """
@@ -177,6 +209,43 @@ XEGPU_DPAS_COLLAPSED_M = XEGPU_DPAS.replace(
     ": memref<4x256x8192xbf16> to memref<256x8192xbf16, strided<[8192,1]>>\n"
     "    %ta = xegpu.create_nd_tdesc %view "
     ": memref<256x8192xbf16, strided<[8192,1]>>",
+)
+
+XEGPU_DPAS_SLICED_M = """
+module {
+  func.func @main(%a: memref<8x256x128xbf16>,
+                  %b: memref<512x128xbf16>) -> vector<8x256xf32> {
+    %cst = arith.constant dense<0.0> : vector<8x256xf32>
+    %c0 = arith.constant 0 : index
+    %view = memref.subview %a[0, 255, 0] [8, 1, 128] [1, 1, 1]
+      : memref<8x256x128xbf16>
+      to memref<8x128xbf16, strided<[32768, 1], offset: 32640>>
+    %ta = xegpu.create_nd_tdesc %view
+      : memref<8x128xbf16, strided<[32768, 1], offset: 32640>>
+      -> !xegpu.tensor_desc<8x32xbf16, #xegpu.block_tdesc_attr<boundary_check = false>>
+    %tb = xegpu.create_nd_tdesc %b : memref<512x128xbf16>
+      -> !xegpu.tensor_desc<256x32xbf16, #xegpu.block_tdesc_attr<boundary_check = false>>
+    %av = xegpu.load_nd %ta[%c0, %c0]
+      : !xegpu.tensor_desc<8x32xbf16, #xegpu.block_tdesc_attr<boundary_check = false>>
+      -> vector<8x32xbf16>
+    %bv = xegpu.load_nd %tb[%c0, %c0]
+      : !xegpu.tensor_desc<256x32xbf16, #xegpu.block_tdesc_attr<boundary_check = false>>
+      -> vector<256x32xbf16>
+    %bt = vector.transpose %bv, [1, 0] : vector<256x32xbf16> to vector<32x256xbf16>
+    %d = xegpu.dpas %av, %bt, %cst
+      : vector<8x32xbf16>, vector<32x256xbf16>, vector<8x256xf32>
+      -> vector<8x256xf32>
+    return %d : vector<8x256xf32>
+  }
+}
+"""
+
+XEGPU_DPAS_DYNAMIC_POSITION = (
+    XEGPU_DPAS_SLICED_M.replace(
+        "%b: memref<512x128xbf16>)", "%b: memref<512x128xbf16>, %position: index)"
+    )
+    .replace("%a[0, 255, 0]", "%a[0, %position, 0]")
+    .replace("offset: 32640", "offset: ?")
 )
 
 
@@ -226,6 +295,18 @@ run("vector_contract", VECTOR_CONTRACT, "vector.contract")
 # CHECK: shape=(2048, 2048, 2048) transpose_a=False transpose_b=True
 run("vector_contract_collapsed_m", VECTOR_CONTRACT_COLLAPSED_M, "vector.contract")
 
+# CHECK-LABEL: Test: vector_contract_sliced_m
+# CHECK: shape=(8, 512, 128) transpose_a=False transpose_b=True
+run("vector_contract_sliced_m", VECTOR_CONTRACT_SLICED_M, "vector.contract")
+
+# CHECK-LABEL: Test: vector_contract_dynamic_position
+# CHECK: shape=(2048, 512, 128) transpose_a=False transpose_b=True
+run(
+    "vector_contract_dynamic_position",
+    VECTOR_CONTRACT_DYNAMIC_POSITION,
+    "vector.contract",
+)
+
 # CHECK-LABEL: Test: xegpu_dpas
 # CHECK: shape=(1024, 4096, 8192) transpose_a=False transpose_b=True
 run("xegpu_dpas", XEGPU_DPAS, "xegpu.dpas")
@@ -233,3 +314,11 @@ run("xegpu_dpas", XEGPU_DPAS, "xegpu.dpas")
 # CHECK-LABEL: Test: xegpu_dpas_collapsed_m
 # CHECK: shape=(1024, 4096, 8192) transpose_a=False transpose_b=True
 run("xegpu_dpas_collapsed_m", XEGPU_DPAS_COLLAPSED_M, "xegpu.dpas")
+
+# CHECK-LABEL: Test: xegpu_dpas_sliced_m
+# CHECK: shape=(8, 512, 128) transpose_a=False transpose_b=True
+run("xegpu_dpas_sliced_m", XEGPU_DPAS_SLICED_M, "xegpu.dpas")
+
+# CHECK-LABEL: Test: xegpu_dpas_dynamic_position
+# CHECK: shape=(2048, 512, 128) transpose_a=False transpose_b=True
+run("xegpu_dpas_dynamic_position", XEGPU_DPAS_DYNAMIC_POSITION, "xegpu.dpas")
