@@ -1,10 +1,46 @@
 from mlir import ir
-from mlir.dialects import ext, transform
+from mlir.dialects import ext, linalg, transform
 from mlir.dialects.transform import DiagnosedSilenceableFailure
 
 from lighthouse.dialects.transform.transform_ext import TransformExtensionDialect
 from ..utils.select_xegpu_gemm_params import select_xegpu_gemm_params
-from ..utils.matmul_analysis import analyze_wg_k_tile_size
+from ..utils.matmul_analysis import analyze_matmul_op, analyze_wg_k_tile_size
+
+
+# TODO: Temporary batch-8 LM-head parameters bypassing the GEMM cost model.
+# Generalize parameter selection for small-M GEMMs.
+_SMALL_M = 8
+_SMALL_M_PARAMS = {
+    "wg_m": 8,
+    "wg_n": 256,
+    "sg_m": 8,
+    "sg_n": 32,
+    "k_tile": 32,
+    "load_a_m": 8,
+    "load_a_k": 16,
+    "load_b_k": 16,
+    "load_b_n": 16,
+    "prefetch_a_m": 8,
+    "prefetch_a_k": 16,
+    "prefetch_b_k": 8,
+    "prefetch_b_n": 16,
+    "prefetch_a_nb": 1,
+    "prefetch_b_nb": 1,
+    "transpose_a": False,
+    "transpose_b": True,
+}
+
+
+def _gemm_m(op: ir.OpView) -> int | None:
+    """Return the global GEMM M size of the anchor, or None if unknown."""
+    if isinstance(op, (linalg.MatmulOp, linalg.GenericOp)):
+        # Untiled linalg anchors produce the full [M, N] output.
+        return ir.ShapedType(op.outputs[0].type).shape[0]
+    try:
+        (m, _, _), _, _ = analyze_matmul_op(op)
+    except (KeyError, ValueError, StopIteration, NotImplementedError):
+        return None
+    return m
 
 
 class InferXeGPUGemmParamsOp(
@@ -75,18 +111,21 @@ class InferXeGPUGemmParamsOp(
             anchor_op = target_ops[0].opview
             device = op.device.value or None
             try:
-                wg_tile, k_tile = analyze_wg_k_tile_size(anchor_op)
-                if forced_wg_tile is not None:
-                    wg_tile = forced_wg_tile
-                if forced_k_tile is not None:
-                    k_tile = forced_k_tile
-                params = select_xegpu_gemm_params(
-                    anchor_op,
-                    wg_tile=wg_tile,
-                    k_tile=k_tile,
-                    sg_tile=sg_tile,
-                    device=device,
-                )
+                if _gemm_m(anchor_op) == _SMALL_M:
+                    params = dict(_SMALL_M_PARAMS)
+                else:
+                    wg_tile, k_tile = analyze_wg_k_tile_size(anchor_op)
+                    if forced_wg_tile is not None:
+                        wg_tile = forced_wg_tile
+                    if forced_k_tile is not None:
+                        k_tile = forced_k_tile
+                    params = select_xegpu_gemm_params(
+                        anchor_op,
+                        wg_tile=wg_tile,
+                        k_tile=k_tile,
+                        sg_tile=sg_tile,
+                        device=device,
+                    )
             except (KeyError, ValueError, StopIteration, NotImplementedError) as e:
                 op.location.emit_error(f"Failed to infer XeGPU GEMM params: {e}")
                 return DiagnosedSilenceableFailure.DefiniteFailure
