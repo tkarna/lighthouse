@@ -7,10 +7,18 @@
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --relu | FileCheck %s
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu | FileCheck %s --check-prefix=EPILOGUE
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --no-accumulate-c | FileCheck %s
-# RUN: %PYTHON %s --dump-kernel=xegpu-wg --truncate-c | FileCheck %s
-# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --truncate-c | FileCheck %s
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --truncate-c | FileCheck %s --check-prefixes=CHECK,TRUNC
+# RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --truncate-c | FileCheck %s --check-prefixes=CHECK,TRUNC,BIASTRUNC
 # RUN: %PYTHON %s --dump-kernel=xegpu-wg --bias --relu --no-accumulate-c | FileCheck %s --check-prefixes=EPILOGUE,NOACC
 # CHECK: module attributes {gpu.container_module} {
+# TRUNC-LABEL: gpu.func @payload_kernel(
+# TRUNC: %[[CLOAD:.*]] = xegpu.load_nd
+# TRUNC-NEXT: %[[WIDE:.*]] = arith.extf %[[CLOAD]]
+# TRUNC: scf.for {{.*}}iter_args({{.*}} = %[[WIDE]])
+# TRUNC: xegpu.dpas
+# BIASTRUNC: arith.addf
+# TRUNC: %[[NARROW:.*]] = arith.truncf
+# TRUNC-NEXT: xegpu.store_nd %[[NARROW]],
 # NOACC-LABEL: func.func @payload(
 # NOACC-NOT: gpu.alloc
 # NOACC-NOT: vector.transfer_write
