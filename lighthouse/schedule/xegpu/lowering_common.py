@@ -312,6 +312,13 @@ def convert_vector_to_xegpu(mod: transform.AnyOpType) -> transform.AnyOpType:
     gpu_mod_ops = match(mod, ops={"gpu.module"})
     with lh_transform.foreach(gpu_mod_ops) as gpu_mod:
         gpu_func = match(gpu_mod, ops={"gpu.func"})
+        # Dimension-dropping transfers, e.g. a single sequence position of a
+        # 3D activation, are not lowerable to nd ops; read them through
+        # rank-reduced strided views instead.
+        transfers = match(
+            gpu_func, ops={"vector.transfer_read", "vector.transfer_write"}
+        )
+        transform_ext.move_offsets_to_subview(transfers, rank_reduce=True)
         gpu_func = apply_registered_pass(gpu_func, "convert-vector-to-xegpu")
         transform.apply_cse(gpu_func)
         gpu_func = apply_registered_pass(gpu_func, "loop-invariant-code-motion")
