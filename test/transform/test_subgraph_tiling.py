@@ -555,6 +555,64 @@ def test_late_bias_relu_setup():
 # CHECK-NEXT: Late bias/ReLU setup fuses into one GEMM kernel and matches NumPy
 
 
+def test_truncated_accumulator():
+    module = generate_gpu_matmul_payload(
+        func_name="payload",
+        M=256,
+        N=256,
+        K=64,
+        ab_type=ir.F16Type.get(),
+        c_type=ir.F32Type.get(),
+        result_type=ir.F16Type.get(),
+        transpose_a=False,
+        transpose_b=True,
+        has_bias=False,
+        has_relu=False,
+        accumulate_c=True,
+    )
+    cleanup = cleanup_schedule()
+    cleanup.body.operations[0].apply(module.operation)
+    module = run(str(module), tile)
+    (wg,) = [op for op in operations(module, "scf.forall") if op.name == "scf.forall"]
+    (k_loop,) = [op for op in operations(wg, "scf.for") if op.name == "scf.for"]
+    initializer = k_loop.operands[3].owner
+    assert initializer.name == "linalg.generic"
+    assert initializer.parent == wg
+    assert len(operations(initializer, "arith.extf")) == 1
+    (matmul,) = operations(k_loop, "linalg.matmul")
+    assert matmul.operands[1].owner.name == "linalg.transpose"
+    assert matmul.operands[1].owner.parent == k_loop
+    assert len(operations(wg, "arith.truncf")) == 1
+
+    PassManager.parse(
+        "builtin.module(empty-tensor-to-alloc-tensor,"
+        "one-shot-bufferize{bufferize-function-boundaries "
+        "function-boundary-type-conversion=identity-layout-map},"
+        "scf-forall-to-for,buffer-deallocation-pipeline,"
+        "convert-linalg-to-loops,expand-strided-metadata,lower-affine,"
+        "convert-scf-to-cf,convert-math-to-llvm)"
+    ).run(module.operation)
+    Runner.make_function_callable(module, "payload")
+    PassManager.parse(
+        "builtin.module(finalize-memref-to-llvm,convert-to-llvm,"
+        "reconcile-unrealized-casts)"
+    ).run(module.operation)
+    rng = np.random.default_rng(42)
+    a = rng.integers(-2, 3, size=(256, 64)).astype(np.float16)
+    b = rng.integers(-2, 3, size=(256, 64)).astype(np.float16)
+    output = rng.integers(-2, 3, size=(256, 256)).astype(np.float16)
+    expected = (a.astype(np.float32) @ b.astype(np.float32).T + output).astype(
+        np.float16
+    )
+    Runner(module).execute("payload", [output, a, b])
+    np.testing.assert_array_equal(output, expected)
+    print("Truncated GEMM initializes the accumulator once and matches NumPy")
+
+
+# CHECK-LABEL: test_truncated_accumulator
+# CHECK-NEXT: Truncated GEMM initializes the accumulator once and matches NumPy
+
+
 def test_mlp_accumulators():
     rng = np.random.default_rng(19)
     for layers in (1, 3):
@@ -819,6 +877,7 @@ with ir.Context(), ir.Location.unknown():
         test_softmax_reductions,
         test_shared_normalization_input,
         test_late_bias_relu_setup,
+        test_truncated_accumulator,
         test_mlp_accumulators,
         test_expanded_projection_cast,
         test_sliced_generic_contraction,
