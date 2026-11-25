@@ -165,19 +165,31 @@ def apply_subgraph_tiling(
 
         # Fuse elementwise operand producers into the K loop, leaving the
         # accumulator initialization outside it.
+        anytype = transform.AnyOpType.get()
+        anyvalue = transform.AnyValueType.get()
         wg_matmul = transform_ext.filter_contraction_ops(
             match(wg_loop, ops={"linalg.matmul", "linalg.generic"})
         )
+        input_producers = []
+        for index in (0, 1):
+            producer = transform.get_defining_op(
+                anytype, transform.get_operand(anyvalue, wg_matmul, [index])
+            )
+            input_producers.extend(
+                [
+                    producer,
+                    transform_ext.trace_producers(
+                        producer, scope=wg_loop, order="reverse-topological"
+                    ),
+                ]
+            )
         operand_producers = transform_ext.filter_elementwise(
             transform_ext.filter_by_name(
-                transform_ext.trace_producers(
-                    wg_matmul, scope=wg_loop, order="reverse-topological"
-                ),
+                transform.merge_handles(input_producers, deduplicate=True),
                 ["linalg.generic", "linalg.transpose"],
             )
         )
         _, k_loop = structured.TileUsingForOp(wg_matmul, sizes=[0, 0, k_tile]).results
-        anytype = transform.AnyOpType.get()
         _, k_loop = structured.structured_fuse_into_containing_op(
             anytype,
             anytype,
