@@ -40,7 +40,7 @@ def get_init_inputs():
 # CHECK-NOT: gpu.launch_func
 # CHECK: gpu.func @main_kernel
 # CHECK-SAME: memref<8192x3072xbf16>
-# CHECK-SAME: memref<4x512x3072xbf16>
+# CHECK-SAME: memref<2048x3072xbf16>
 # CHECK-SAME: memref<4x512x8192xbf16>
 # CHECK: xegpu.dpas
 # CHECK: math.exp
