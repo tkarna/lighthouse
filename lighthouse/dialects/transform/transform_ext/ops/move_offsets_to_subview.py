@@ -46,16 +46,39 @@ class MoveOffsetsToSubviewOp(
     TransformExtensionDialect.Operation, name="move_offsets_to_subview"
 ):
     """
-    Outlines non-constant indicies from vector reads and writes to subviews.
-    A support rewrite to simplify offsets analysis.
+    Outlines indices from vector reads and writes to subviews.
+
+    By default, non-constant indices of minor-identity transfers move to a
+    subview, a support rewrite to simplify offsets analysis.
+
+    With `rank_reduce`, a transfer whose permutation map is not a minor
+    identity but drops source dimensions while keeping the others in order
+    instead becomes a minor-identity transfer of a rank-reduced subview. The subview fixes the
+    dropped dimensions at the transfer's indices; the remaining indices stay
+    on the transfer. Other transfers are left unchanged. For example,
+
+        vector.transfer_read %src[%c0, %c255, %k]
+            {permutation_map = (d0, d1, d2) -> (d0, d2)}
+            : memref<8x256x128xbf16>, vector<8x32xbf16>
+
+    reads through a zero-copy strided view:
+
+        %view = memref.subview %src[0, 255, 0] [8, 1, 128] [1, 1, 1]
+            : memref<8x256x128xbf16>
+            to memref<8x128xbf16, strided<[32768, 1], offset: 32640>>
+        vector.transfer_read %view[%c0, %k] : ..., vector<8x32xbf16>
 
     Args:
         target: Handle to target op
+        rank_reduce: Rewrite dimension-dropping transfers instead.
     Returns:
         Updated ops with offsets moved to subviews
     """
 
     target: ext.Operand[transform.AnyOpType]
+    rank_reduce: ir.IntegerAttr = ext.attribute(
+        default_factory=lambda: ir.IntegerAttr.get(ir.IntegerType.get_signless(1), 0)
+    )
     updated_op: ext.Result[transform.AnyOpType[()]] = ext.infer_result()
 
     @classmethod
@@ -138,6 +161,84 @@ class MoveOffsetsToSubviewOp(
 
         return transfer_op
 
+    @staticmethod
+    def create_rank_reduced_subview(target: ir.OpView) -> ir.OpView | None:
+        # The rebuilt transfer carries no mask; leave masked transfers alone.
+        if target.mask is not None:
+            return None
+        base_val = get_base(target)
+        memref_type: ir.MemRefType = base_val.type
+        if not memref_type.has_static_shape:
+            return None
+        strides, offset = memref_type.get_strides_and_offset()
+        dynamic_val = ir.ShapedType.get_dynamic_stride_or_offset()
+        if dynamic_val in strides:
+            return None
+
+        map_attr = get_permutation_map(target)
+        map: ir.AffineMap = map_attr.value
+        kept = []
+        for expr in map.results:
+            if not isinstance(expr, ir.AffineDimExpr):
+                return None
+            kept.append(expr.position)
+        minor_identity = ir.AffineMap.get_minor_identity(map.n_dims, len(map.results))
+        if map == minor_identity or kept != sorted(set(kept)):
+            return None
+
+        indices = list(get_indices(target))
+        subview_offsets = []
+        sizes = []
+        for dim, (size, index) in enumerate(zip(memref_type.shape, indices)):
+            if dim in kept:
+                subview_offsets.append(0)
+                sizes.append(size)
+                continue
+            sizes.append(1)
+            if isinstance(index.owner, arith.ConstantOp):
+                const_index = ir.IntegerAttr(index.owner.value).value
+                subview_offsets.append(const_index)
+                if offset != dynamic_val:
+                    offset += const_index * strides[dim]
+            else:
+                subview_offsets.append(index)
+                offset = dynamic_val
+
+        layout = ir.StridedLayoutAttr.get(offset, [strides[dim] for dim in kept])
+        result_type = ir.MemRefType.get(
+            [memref_type.shape[dim] for dim in kept],
+            memref_type.element_type,
+            layout,
+            memref_type.memory_space,
+        )
+        base_subview = memref.subview(
+            base_val,
+            subview_offsets,
+            sizes,
+            [1] * memref_type.rank,
+            result_type=result_type,
+        )
+
+        identity = ir.AffineMapAttr.get(ir.AffineMap.get_identity(len(kept)))
+        transfer_indices = [indices[dim] for dim in kept]
+        if isinstance(target, vector.TransferReadOp):
+            return vector.transfer_read(
+                get_vector_type(target),
+                base_subview,
+                transfer_indices,
+                identity,
+                target.padding,
+                get_in_bounds(target),
+            ).owner
+        return vector.transfer_write(
+            None,
+            target.valueToStore,
+            base_subview,
+            transfer_indices,
+            identity,
+            get_in_bounds(target),
+        )
+
     class TransformOpInterfaceModel(transform.TransformOpInterface):
         @staticmethod
         def apply(
@@ -148,6 +249,11 @@ class MoveOffsetsToSubviewOp(
         ) -> DiagnosedSilenceableFailure:
             targets = state.get_payload_ops(op.target)
             updated_ops = []
+            create = (
+                MoveOffsetsToSubviewOp.create_rank_reduced_subview
+                if op.rank_reduce.value
+                else MoveOffsetsToSubviewOp.create_subview
+            )
 
             for target in targets:
                 if not isinstance(
@@ -160,7 +266,7 @@ class MoveOffsetsToSubviewOp(
                     return DiagnosedSilenceableFailure.SilenceableFailure
 
                 with ir.InsertionPoint(target), target.location:
-                    updated_op = MoveOffsetsToSubviewOp.create_subview(target)
+                    updated_op = create(target)
                     if updated_op is None:
                         updated_op = target
                     else:
@@ -187,7 +293,11 @@ class MoveOffsetsToSubviewOp(
 
 def move_offsets_to_subview(
     target: ir.Value[transform.AnyOpType],
+    rank_reduce: bool = False,
 ) -> ir.Value[transform.AnyOpType]:
     """snake_case wrapper to create a MoveOffsetsToSubviewOp."""
-    op = MoveOffsetsToSubviewOp(target=target)
+    op = MoveOffsetsToSubviewOp(
+        target=target,
+        rank_reduce=ir.IntegerAttr.get(ir.IntegerType.get_signless(1), rank_reduce),
+    )
     return op.updated_op

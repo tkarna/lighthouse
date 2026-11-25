@@ -222,3 +222,144 @@ def test_negative_dynamic_strides(payload_handle):
     # CHECK-NOT: memref.subview
     # CHECK: vector.transfer_write
     transform.print_()
+
+
+def payload_rank_reduce_read():
+    return ir.Module.parse(
+        r"""
+func.func @rank_reduce_read(%arg0: memref<8x256x128xbf16>, %k: index) -> vector<8x32xbf16> {
+    %c0 = arith.constant 0 : index
+    %c255 = arith.constant 255 : index
+    %cst = arith.constant 0.000000e+00 : bf16
+    %0 = vector.transfer_read %arg0[%c0, %c255, %k], %cst
+        {in_bounds = [true, true],
+        permutation_map = affine_map<(d0, d1, d2) -> (d0, d2)>}
+        : memref<8x256x128xbf16>, vector<8x32xbf16>
+    return %0 : vector<8x32xbf16>
+}
+    """
+    )
+
+
+# CHECK-LABEL: Test: test_rank_reduce_read
+@run(payload_rank_reduce_read)
+def test_rank_reduce_read(payload_handle):
+    any_op = transform.AnyOpType.get()
+    transfers = transform_structured.structured_match(
+        any_op, payload_handle, ops={"vector.transfer_read"}
+    )
+    transform_ext.move_offsets_to_subview(transfers, rank_reduce=True)
+
+    # CHECK-LABEL: @rank_reduce_read(
+    # CHECK-SAME: %[[ARG0:.+]]: memref<8x256x128xbf16>, %[[K:.+]]: index)
+    # CHECK: %[[VIEW:.+]] = memref.subview %[[ARG0]][0, 255, 0] [8, 1, 128] [1, 1, 1]
+    # CHECK-SAME: to memref<8x128xbf16, strided<[32768, 1], offset: 32640>>
+    # CHECK: vector.transfer_read %[[VIEW]][%{{.+}}, %[[K]]], %{{.+}} {in_bounds = [true, true]}
+    # CHECK-SAME: memref<8x128xbf16, strided<[32768, 1], offset: 32640>>, vector<8x32xbf16>
+    transform.print_()
+
+
+def payload_rank_reduce_dynamic_write():
+    return ir.Module.parse(
+        r"""
+func.func @rank_reduce_dynamic_write(%arg0: memref<8x256x128xbf16>, %s: index, %v: vector<8x32xbf16>) {
+    %c0 = arith.constant 0 : index
+    vector.transfer_write %v, %arg0[%c0, %s, %c0]
+        {in_bounds = [true, true],
+        permutation_map = affine_map<(d0, d1, d2) -> (d0, d2)>}
+        : vector<8x32xbf16>, memref<8x256x128xbf16>
+    return
+}
+    """
+    )
+
+
+# CHECK-LABEL: Test: test_rank_reduce_dynamic_write
+@run(payload_rank_reduce_dynamic_write)
+def test_rank_reduce_dynamic_write(payload_handle):
+    any_op = transform.AnyOpType.get()
+    transfers = transform_structured.structured_match(
+        any_op, payload_handle, ops={"vector.transfer_write"}
+    )
+    transform_ext.move_offsets_to_subview(transfers, rank_reduce=True)
+
+    # CHECK-LABEL: @rank_reduce_dynamic_write(
+    # CHECK-SAME: %[[ARG0:.+]]: memref<8x256x128xbf16>, %[[S:.+]]: index,
+    # CHECK: %[[VIEW:.+]] = memref.subview %[[ARG0]][0, %[[S]], 0] [8, 1, 128] [1, 1, 1]
+    # CHECK-SAME: to memref<8x128xbf16, strided<[32768, 1], offset: ?>>
+    # CHECK: vector.transfer_write %{{.+}}, %[[VIEW]][%{{.+}}, %{{.+}}] {in_bounds = [true, true]}
+    # CHECK-SAME: vector<8x32xbf16>, memref<8x128xbf16, strided<[32768, 1], offset: ?>>
+    transform.print_()
+
+
+def payload_negative_rank_reduce():
+    return ir.Module.parse(
+        r"""
+func.func @negative_rank_reduce(%arg0: memref<8x256x128xbf16>) -> (vector<32x8xbf16>, vector<8x32xbf16>) {
+    %c0 = arith.constant 0 : index
+    %cst = arith.constant 0.000000e+00 : bf16
+    %0 = vector.transfer_read %arg0[%c0, %c0, %c0], %cst
+        {in_bounds = [true, true],
+        permutation_map = affine_map<(d0, d1, d2) -> (d2, d0)>}
+        : memref<8x256x128xbf16>, vector<32x8xbf16>
+    %1 = vector.transfer_read %arg0[%c0, %c0, %c0], %cst
+        {in_bounds = [true, true],
+        permutation_map = affine_map<(d0, d1, d2) -> (d1, d2)>}
+        : memref<8x256x128xbf16>, vector<8x32xbf16>
+    return %0, %1 : vector<32x8xbf16>, vector<8x32xbf16>
+}
+    """
+    )
+
+
+# Transposing transfers are not rank-reduced; with rank_reduce, minor-identity
+# transfers are left to the default mode.
+# CHECK-LABEL: Test: test_negative_rank_reduce
+@run(payload_negative_rank_reduce)
+def test_negative_rank_reduce(payload_handle):
+    any_op = transform.AnyOpType.get()
+    transfers = transform_structured.structured_match(
+        any_op, payload_handle, ops={"vector.transfer_read"}
+    )
+    transform_ext.move_offsets_to_subview(transfers, rank_reduce=True)
+
+    # CHECK-LABEL: @negative_rank_reduce(
+    # CHECK-NOT: memref.subview
+    # CHECK: vector.transfer_read %{{.+}} permutation_map
+    # CHECK-NOT: memref.subview
+    # CHECK: vector.transfer_read %{{.+}} : memref<8x256x128xbf16>, vector<8x32xbf16>
+    transform.print_()
+
+
+def payload_negative_rank_reduce_masked():
+    return ir.Module.parse(
+        r"""
+func.func @negative_rank_reduce_masked(%arg0: memref<8x256x128xbf16>, %m: vector<8x32xi1>) -> vector<8x32xbf16> {
+    %c0 = arith.constant 0 : index
+    %c255 = arith.constant 255 : index
+    %cst = arith.constant 0.000000e+00 : bf16
+    %0 = vector.transfer_read %arg0[%c0, %c255, %c0], %cst, %m
+        {in_bounds = [true, true],
+        permutation_map = affine_map<(d0, d1, d2) -> (d0, d2)>}
+        : memref<8x256x128xbf16>, vector<8x32xbf16>
+    return %0 : vector<8x32xbf16>
+}
+    """
+    )
+
+
+# Masked transfers keep their original form.
+# CHECK-LABEL: Test: test_negative_rank_reduce_masked
+@run(payload_negative_rank_reduce_masked)
+def test_negative_rank_reduce_masked(payload_handle):
+    any_op = transform.AnyOpType.get()
+    transfers = transform_structured.structured_match(
+        any_op, payload_handle, ops={"vector.transfer_read"}
+    )
+    transform_ext.move_offsets_to_subview(transfers, rank_reduce=True)
+
+    # CHECK-LABEL: @negative_rank_reduce_masked(
+    # CHECK-NOT: memref.subview
+    # CHECK: vector.transfer_read %{{.+}}, %{{.+}}, %{{.+}} {{.*}}permutation_map
+    # CHECK-SAME: memref<8x256x128xbf16>, vector<8x32xbf16>
+    transform.print_()
