@@ -492,14 +492,28 @@ def _same_offset(lhs, rhs):
     )
 
 
-def _reshape_output_fill_slice(loop, insert, nodes, outputs, tiles):
-    """Find an old output slice used only as a fully overwritten fill init."""
+def _is_undefined(value):
+    """Whether value is a tensor.empty, possibly reshaped."""
+    op = value.owner.opview if isinstance(value, ir.OpResult) else None
+    while isinstance(op, (tensor.CollapseShapeOp, tensor.ExpandShapeOp)):
+        value = op.src
+        op = value.owner.opview if isinstance(value, ir.OpResult) else None
+    return isinstance(op, tensor.EmptyOp)
+
+
+def _reshape_output_slice(loop, insert, nodes, outputs, tiles):
+    """Find the old output tile slice to take from the reshaped shared output.
+
+    The old shared output has undefined contents, so the slice can be replaced
+    by the matching tile of the new shared output whatever its users are. The
+    tile's destination then aliases the loop output and bufferizes in place.
+    """
     if len(nodes) != 1 or not isinstance(nodes[0], tensor.ExpandShapeOp):
         return None
     reshape = nodes[0]
     if outputs != [reshape.result] or reshape.src != loop.results[0]:
         return None
-    if not isinstance(loop.outputs[0].owner, tensor.EmptyOp):
+    if not _is_undefined(loop.outputs[0]):
         return None
     tile = tiles[reshape.result]
     for use in insert.dest.uses:
@@ -525,13 +539,7 @@ def _reshape_output_fill_slice(loop, insert, nodes, outputs, tiles):
             s for s in tile.sizes if s != 1
         ]:
             continue
-        users = list(candidate.result.uses)
-        if len(users) == 1:
-            fill = users[0].owner.opview
-            if isinstance(fill, linalg.FillOp) and list(fill.outputs) == [
-                candidate.result
-            ]:
-                return candidate
+        return candidate
     return None
 
 
@@ -539,7 +547,7 @@ def _rewrite(loop, plan, rewriter):
     insert, tiles, nodes, operand_tiles, outputs = plan
     old_body = loop.regions[0].blocks[0]
     rank = len(loop.staticStep)
-    fill_slice = _reshape_output_fill_slice(loop, insert, nodes, outputs, tiles)
+    output_slice = _reshape_output_slice(loop, insert, nodes, outputs, tiles)
     with loop.location, ir.InsertionPoint(nodes[-1]):
         destinations = [
             tensor.EmptyOp(_shape(value), value.type.element_type).result
@@ -568,12 +576,12 @@ def _rewrite(loop, plan, rewriter):
         values[old_body.arguments[rank]] = loop.outputs[0]
         with ir.InsertionPoint(body):
             for op in list(old_body.operations)[:-1]:
-                if fill_slice is not None and op.operation == fill_slice.operation:
-                    values[fill_slice.result] = _slice(
+                if output_slice is not None and op.operation == output_slice.operation:
+                    values[output_slice.result] = _slice(
                         body.arguments[rank],
                         tiles[outputs[0]],
                         ivs,
-                        result_type=fill_slice.result.type,
+                        result_type=output_slice.result.type,
                     )
                     continue
                 cloned = op.operation.clone()
@@ -711,8 +719,9 @@ class FuseForallEpilogueOp(
     tensor and preserve complete slice/concat dimensions. The loop's final
     parallel_insert_slice may drop unit dimensions.
 
-    For a reshape-only output, a matching tile used solely as a fill
-    destination can write directly into the reshaped shared output.
+    For a reshape-only output of a loop whose shared output is a (possibly
+    reshaped) tensor.empty, the old output tile slice is taken from the new
+    shared output instead, so the tile is written in place.
 
     If `consumers` is given, only those ops are fused, and all of them must be;
     otherwise the transform is a silenceable failure. Without `consumers`, all

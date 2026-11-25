@@ -383,6 +383,63 @@ def test_reshape_only_output():
 # CHECK: Reshape-only GEMM epilogues store directly to the shared output
 
 
+def test_reshaped_empty_output_slice():
+    module = ir.Module.parse("""
+#id = affine_map<(m, n) -> (m, n)>
+func.func @logits(%x: tensor<8x16xf32>) -> tensor<8x1x16xbf16> {
+  %e = tensor.empty() : tensor<8x1x16xbf16>
+  %c = tensor.collapse_shape %e [[0,1],[2]]
+    : tensor<8x1x16xbf16> into tensor<8x16xbf16>
+  %r = scf.forall (%n) in (2) shared_outs(%dest = %c) -> tensor<8x16xbf16> {
+    %o = affine.apply affine_map<(i)->(i*8)>(%n)
+    %in = tensor.extract_slice %x[0,%o] [8,8] [1,1]
+      : tensor<8x16xf32> to tensor<8x8xf32>
+    %out = tensor.extract_slice %dest[0,%o] [8,8] [1,1]
+      : tensor<8x16xbf16> to tensor<8x8xbf16>
+    %t = linalg.generic {indexing_maps = [#id, #id],
+        iterator_types = ["parallel", "parallel"]}
+        ins(%in : tensor<8x8xf32>) outs(%out : tensor<8x8xbf16>) {
+    ^bb0(%a: f32, %b: bf16):
+      %v = arith.truncf %a : f32 to bf16
+      linalg.yield %v : bf16
+    } -> tensor<8x8xbf16>
+    scf.forall.in_parallel {
+      tensor.parallel_insert_slice %t into %dest[0,%o] [8,8] [1,1]
+        : tensor<8x8xbf16> into tensor<8x16xbf16>
+    }
+  }
+  %ex = tensor.expand_shape %r [[0,1],[2]] output_shape [8,1,16]
+    : tensor<8x16xbf16> into tensor<8x1x16xbf16>
+  return %ex : tensor<8x1x16xbf16>
+}
+""")
+    with schedule_boilerplate() as (schedule, sequence):
+        loop = lh_transform.match_op(sequence.bodyTarget, "scf.forall").results[0]
+        transform_ext.fuse_forall_epilogue(loop)
+        lh_transform.cleanup(sequence.bodyTarget)
+        transform.yield_([])
+    schedule.body.operations[0].apply(module.operation)
+    assert module.operation.verify()
+    (loop,) = operations(module, "scf.forall")
+    (generic,) = operations(loop, "linalg.generic")
+    assert (
+        generic.outputs[0].owner.opview.source == loop.regions[0].blocks[0].arguments[1]
+    )
+    with schedule_boilerplate() as (schedule, sequence):
+        lowering_common.vectorize(sequence.bodyTarget)
+        lowering_common.bufferize(sequence.bodyTarget)
+        transform.yield_([])
+    schedule.body.operations[0].apply(module.operation)
+    assert module.operation.verify()
+    (loop,) = operations(module, "scf.forall")
+    for name in ("memref.alloc", "gpu.alloc", "memref.copy"):
+        assert not operations(loop, name), name
+    print("Epilogue outputs of reshaped empty destinations are written in place")
+
+
+# CHECK: Epilogue outputs of reshaped empty destinations are written in place
+
+
 def test_rank_reduced_nested_consumer():
     module = ir.Module.parse("""
 func.func @heads(%x: tensor<2x2x4x4xf32>) -> tensor<8x8xf32> {
@@ -458,5 +515,6 @@ with ir.Context(), ir.Location.unknown():
     test_external_users()
     test_numerics()
     test_reshape_only_output()
+    test_reshaped_empty_output_slice()
     test_rank_reduced_nested_consumer()
     test_grouped_head_offsets()
